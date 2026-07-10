@@ -1,8 +1,8 @@
 [Unit]
-Description=NewDomofon SmartYard Compatibility Proxy
-Documentation=file:/opt/newdomofon-video-master/docs/BAREMETAL_DEBIAN12.md
-After=network-online.target newdomofon-video-dvr.service
-Wants=network-online.target
+Description=NewDomofon SmartYard Compatibility Gateway
+Documentation=file:/opt/newdomofon-video-master/README.md
+After=network-online.target newdomofon-video-backend.service
+Wants=network-online.target newdomofon-video-backend.service
 
 [Service]
 Type=simple
@@ -12,8 +12,10 @@ WorkingDirectory=/opt/newdomofon-video-master/smartyard-compat-proxy
 EnvironmentFile=/etc/newdomofon-video/app.env
 Environment=NODE_ENV=production
 Environment=SMARTYARD_COMPAT_PORT=3082
+Environment=SMARTYARD_LEGACY_PORT=3083
+Environment=SMARTYARD_BACKEND_URL=http://127.0.0.1:3000
 Environment=DVR_ENGINE_URL=http://127.0.0.1:3010
-ExecStart=/usr/bin/node /opt/newdomofon-video-master/smartyard-compat-proxy/server.js
+ExecStart=/usr/bin/node /opt/newdomofon-video-master/smartyard-compat-proxy/server-node-aware.js
 Restart=always
 RestartSec=3
 TimeoutStopSec=20
