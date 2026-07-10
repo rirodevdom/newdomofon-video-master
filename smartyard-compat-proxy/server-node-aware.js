@@ -33,10 +33,10 @@ function cors(extra = {}) {
 function sendJson(res, status, body, extra = {}) {
   const text = JSON.stringify(body);
   res.writeHead(status, cors({
+    ...extra,
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
-    'content-length': Buffer.byteLength(text),
-    ...extra
+    'content-length': Buffer.byteLength(text)
   }));
   res.end(text);
 }
@@ -44,10 +44,10 @@ function sendJson(res, status, body, extra = {}) {
 function sendText(res, status, body, contentType, extra = {}) {
   const text = String(body || '');
   res.writeHead(status, cors({
+    ...extra,
     'content-type': contentType,
     'cache-control': 'no-store',
-    'content-length': Buffer.byteLength(text),
-    ...extra
+    'content-length': Buffer.byteLength(text)
   }));
   res.end(text);
 }
