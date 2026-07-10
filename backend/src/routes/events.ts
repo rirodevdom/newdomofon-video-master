@@ -1,171 +1,108 @@
-import crypto from 'node:crypto';
 import { Router } from 'express';
 import { z } from 'zod';
-import { query } from '../db.js';
 import { requireAuth, isAdmin } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import type { AuthRequest } from '../types.js';
 import { canAccessCamera } from '../services/cameraAccess.js';
+import { fetchNodeEvents, getCameraEventTarget } from '../services/nodeEventProxy.js';
 
 export const eventsRouter = Router();
 export const internalEventsRouter = Router();
 
-function requireInternal(req: any, res: any, next: any) {
-  const expected = process.env.INTERNAL_DVR_SECRET;
-  const got = req.header('x-internal-secret');
-
-  if (!expected) return res.status(500).json({ error: 'INTERNAL_DVR_SECRET is not configured' });
-  if (!got || got !== expected) return res.status(403).json({ error: 'Forbidden' });
-
-  return next();
-}
-
-const eventSchema = z.object({
-  camera_id: z.string().uuid(),
-  stream_name: z.string().min(1),
-  event_type: z.string().min(1).default('unknown'),
-  event_state: z.string().nullable().optional(),
-  topic: z.string().nullable().optional(),
-  source_name: z.string().nullable().optional(),
-  occurred_at: z.string().datetime(),
-  data: z.record(z.any()).default({})
+const paramsSchema = z.object({ cameraId: z.string().uuid() });
+const rangeSchema = z.object({
+  start: z.string().datetime(),
+  end: z.string().datetime()
+});
+const eventsQuerySchema = rangeSchema.extend({
+  type: z.string().min(1).max(128).optional(),
+  limit: z.coerce.number().int().min(1).max(5000).optional()
 });
 
-const ingestSchema = z.object({
-  events: z.array(eventSchema).max(500)
-});
-
-function eventHash(event: z.infer<typeof eventSchema>) {
-  return crypto
-    .createHash('sha256')
-    .update(JSON.stringify({
-      camera_id: event.camera_id,
-      occurred_at: event.occurred_at,
-      topic: event.topic || '',
-      event_type: event.event_type || '',
-      event_state: event.event_state || '',
-      source_name: event.source_name || '',
-      data: event.data || {}
-    }))
-    .digest('hex');
-}
-
-internalEventsRouter.use(requireInternal);
-
-internalEventsRouter.get('/cameras/onvif', asyncHandler(async (_req, res) => {
-  const result = await query(
-    `SELECT id, name, stream_name, source_url, onvif_xaddr, onvif_port, onvif_username
-       FROM cameras
-      WHERE is_enabled = true
-        AND onvif_xaddr IS NOT NULL
-      ORDER BY name`
-  );
-
-  res.json({ items: result.rows });
-}));
-
-internalEventsRouter.post('/events/onvif', asyncHandler(async (req, res) => {
-  const body = ingestSchema.parse(req.body || {});
-  let inserted = 0;
-
-  for (const event of body.events) {
-    const hash = eventHash(event);
-
-    const result = await query(
-      `INSERT INTO camera_events(
-         camera_id, stream_name, event_type, event_state, topic, source_name,
-         event_hash, data, occurred_at
-       )
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-       ON CONFLICT (camera_id, event_hash) DO NOTHING
-       RETURNING id`,
-      [
-        event.camera_id,
-        event.stream_name,
-        event.event_type || 'unknown',
-        event.event_state ?? null,
-        event.topic ?? null,
-        event.source_name ?? null,
-        hash,
-        event.data || {},
-        event.occurred_at
-      ]
-    );
-
-    inserted += result.rowCount || 0;
+function validateRange(start: string, end: string): void {
+  const startMs = Date.parse(start);
+  const endMs = Date.parse(end);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || startMs >= endMs) {
+    const error = new Error('Invalid start/end') as Error & { statusCode?: number };
+    error.statusCode = 400;
+    throw error;
   }
 
-  res.json({ ok: true, inserted });
-}));
+  const maxSeconds = Math.max(60, Number(process.env.NODE_EVENT_QUERY_MAX_SECONDS || 31 * 24 * 60 * 60));
+  if (Math.ceil((endMs - startMs) / 1000) > maxSeconds) {
+    const error = new Error(`Requested event range is too large. Max ${maxSeconds} seconds.`) as Error & { statusCode?: number };
+    error.statusCode = 413;
+    throw error;
+  }
+}
+
+async function proxyRoute(
+  req: AuthRequest,
+  res: any,
+  suffix: 'events' | 'events/summary',
+  query: Record<string, string>
+) {
+  const { cameraId } = paramsSchema.parse(req.params);
+
+  if (!isAdmin(req) && !await canAccessCamera(req.user!, cameraId)) {
+    return res.status(403).json({ error: 'No access to camera' });
+  }
+
+  const target = await getCameraEventTarget(cameraId);
+  if (!target) return res.status(404).json({ error: 'Camera not found' });
+
+  const result = await fetchNodeEvents({
+    target,
+    userId: req.user!.id,
+    suffix,
+    query
+  });
+
+  res.setHeader('cache-control', 'no-store');
+  res.type(result.contentType);
+  return res.status(result.status).send(result.body);
+}
 
 eventsRouter.use(requireAuth);
 
 eventsRouter.get('/cameras/:cameraId/events', asyncHandler(async (req, res) => {
-  const authReq = req as AuthRequest;
-  const params = z.object({
-    cameraId: z.string().uuid()
-  }).parse(req.params);
-
-  const q = z.object({
-    start: z.string().datetime(),
-    end: z.string().datetime(),
-    type: z.string().optional()
-  }).parse(req.query);
-
-  if (!isAdmin(authReq)) {
-    if (!await canAccessCamera(authReq.user!, params.cameraId)) return res.status(403).json({ error: 'No access to camera' });
-  }
-
-  const values: any[] = [params.cameraId, q.start, q.end];
-  let typeFilter = '';
-
-  if (q.type) {
-    values.push(q.type);
-    typeFilter = ` AND event_type = $${values.length}`;
-  }
-
-  const result = await query(
-    `SELECT id, camera_id, stream_name, event_type, event_state, topic, source_name, data, occurred_at, created_at
-       FROM camera_events
-      WHERE camera_id = $1
-        AND occurred_at >= $2
-        AND occurred_at <= $3
-        ${typeFilter}
-      ORDER BY occurred_at ASC
-      LIMIT 5000`,
-    values
-  );
-
-  res.json({ items: result.rows });
+  const q = eventsQuerySchema.parse(req.query);
+  validateRange(q.start, q.end);
+  return proxyRoute(req as AuthRequest, res, 'events', {
+    start: q.start,
+    end: q.end,
+    ...(q.type ? { type: q.type } : {}),
+    ...(q.limit ? { limit: String(q.limit) } : {})
+  });
 }));
 
 eventsRouter.get('/cameras/:cameraId/events/summary', asyncHandler(async (req, res) => {
-  const authReq = req as AuthRequest;
-  const params = z.object({
-    cameraId: z.string().uuid()
-  }).parse(req.params);
-
-  const q = z.object({
-    start: z.string().datetime(),
-    end: z.string().datetime()
-  }).parse(req.query);
-
-  if (!isAdmin(authReq)) {
-    if (!await canAccessCamera(authReq.user!, params.cameraId)) return res.status(403).json({ error: 'No access to camera' });
-  }
-
-  const result = await query(
-    `SELECT date_trunc('minute', occurred_at) AS bucket,
-            count(*)::int AS count,
-            jsonb_agg(DISTINCT event_type) AS types
-       FROM camera_events
-      WHERE camera_id = $1
-        AND occurred_at >= $2
-        AND occurred_at <= $3
-      GROUP BY 1
-      ORDER BY 1 ASC`,
-    [params.cameraId, q.start, q.end]
-  );
-
-  res.json({ items: result.rows });
+  const q = rangeSchema.parse(req.query);
+  validateRange(q.start, q.end);
+  return proxyRoute(req as AuthRequest, res, 'events/summary', {
+    start: q.start,
+    end: q.end
+  });
 }));
+
+function requireInternal(req: any, res: any, next: any) {
+  const expected = process.env.INTERNAL_DVR_SECRET;
+  const actual = req.header('x-internal-secret');
+  if (!expected) return res.status(500).json({ error: 'INTERNAL_DVR_SECRET is not configured' });
+  if (!actual || actual !== expected) return res.status(403).json({ error: 'Forbidden' });
+  return next();
+}
+
+internalEventsRouter.use(requireInternal);
+internalEventsRouter.get('/cameras/onvif', (_req, res) => {
+  res.status(410).json({
+    error: 'ONVIF camera discovery moved to node-agent config',
+    storage: 'node'
+  });
+});
+internalEventsRouter.post('/events/onvif', (_req, res) => {
+  res.status(410).json({
+    error: 'Event ingest on master is disabled; events are stored on node',
+    storage: 'node'
+  });
+});

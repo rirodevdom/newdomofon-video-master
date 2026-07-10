@@ -139,12 +139,14 @@
                 </tr>
                 <tr v-if="generatedCameraLinks[camera.id]">
                   <td colspan="5" class="pb-4">
-                    <v-alert type="warning" variant="tonal" density="compact" class="mb-2">
-                      Ссылки и токены показаны один раз. Истекают: {{ formatDate(generatedCameraLinks[camera.id].expires_at) }}
+                    <v-alert type="info" variant="tonal" density="compact" class="mb-2">
+                      Общая ссылка SmartYard-Server постоянная. Live/archive ссылки имеют срок действия: {{ formatDate(generatedCameraLinks[camera.id].expires_at) }}
                     </v-alert>
+                    <v-textarea :model-value="generatedCameraLinks[camera.id].smartyard_url" label="Общая ссылка для SmartYard-Server" rows="2" readonly density="compact" />
                     <v-textarea :model-value="generatedCameraLinks[camera.id].live_url" label="Live HLS URL" rows="2" readonly density="compact" />
                     <v-textarea :model-value="generatedCameraLinks[camera.id].archive_url_template" label="Archive HLS URL template" rows="2" readonly density="compact" />
                     <div class="d-flex flex-wrap" style="gap: 8px">
+                      <v-btn size="small" color="primary" variant="tonal" @click="copyText(generatedCameraLinks[camera.id].smartyard_url)">Копировать SmartYard</v-btn>
                       <v-btn size="small" variant="tonal" @click="copyText(generatedCameraLinks[camera.id].live_url)">Копировать live</v-btn>
                       <v-btn size="small" variant="tonal" @click="copyText(generatedCameraLinks[camera.id].archive_url_template)">Копировать archive</v-btn>
                       <v-btn size="small" variant="tonal" @click="copyText(generatedCameraLinks[camera.id].live_token)">Копировать live token</v-btn>
@@ -223,7 +225,7 @@ function notify(text: string, type: 'success' | 'error' = 'success') {
 }
 
 function formatDate(value: string | null | undefined) {
-  return value ? new Date(value).toLocaleString() : '—';
+  return value ? new Date(value).toLocaleString() : 'не истекает';
 }
 
 async function loadUsers() {
@@ -277,7 +279,6 @@ async function removeUser(user: any) {
   await loadUsers();
 }
 
-
 async function copyText(value: string | null | undefined) {
   if (!value) return;
   await navigator.clipboard?.writeText(value);
@@ -288,10 +289,17 @@ async function generateCameraLinks(camera: any) {
   generatingCameraLink.value = camera.id;
   try {
     const ttlSeconds = Math.max(1, Number(cameraLinkDays.value || 30)) * 24 * 60 * 60;
-    const response = await api.post(`/tokens/camera-links/${camera.id}`, { ttl_seconds: ttlSeconds });
+    const [mediaResponse, smartYardResponse] = await Promise.all([
+      api.post(`/tokens/camera-links/${camera.id}`, { ttl_seconds: ttlSeconds }),
+      api.post(`/tokens/smartyard-links/${camera.id}`, {})
+    ]);
     generatedCameraLinks.value = {
       ...generatedCameraLinks.value,
-      [camera.id]: response.data
+      [camera.id]: {
+        ...mediaResponse.data,
+        ...smartYardResponse.data,
+        expires_at: mediaResponse.data.expires_at
+      }
     };
     notify('Ссылки камеры сгенерированы');
   } catch (err: any) {

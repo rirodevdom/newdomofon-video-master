@@ -19,7 +19,6 @@ import { onvifRouter } from './routes/onvif.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { cleanupExpiredPlaybackTokens } from './services/tokenCleanup.js';
 import { playbackTokensRouter } from './routes/playbackTokens.js';
-import { mediaPlaybackCompatRouter } from './routes/mediaPlaybackCompat.js';
 import { playerCompatRouter } from './routes/playerCompat.js';
 import { internalOnvifEventsRouter } from './routes/internalOnvifEvents.js';
 import { globalPlaybackTokensRouter } from './routes/globalPlaybackTokens.js';
@@ -29,6 +28,7 @@ import { nodeAgentRouter } from './routes/nodeAgent.js';
 import { devicesRouter } from './routes/devices.js';
 import { dashboardRouter } from './routes/dashboard.js';
 import { tokensRouter } from './routes/tokens.js';
+import { smartYardLinksRouter } from './routes/smartyardLinks.js';
 
 const app = express();
 
@@ -47,15 +47,17 @@ app.use(rateLimit({ windowMs: 60_000, limit: 600, standardHeaders: 'draft-7', le
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'backend' }));
 
-
-app.use('/api/internal', internalOnvifEventsRouter);
+// The explicit 410 event-ingest routes must be mounted before legacy internal
+// helpers so master can never persist camera event payloads again.
 app.use('/api/internal', internalEventsRouter);
+app.use('/api/internal', internalOnvifEventsRouter);
 app.use('/api/node-agent', nodeAgentRouter);
 app.use('/api/auth', authRouter);
 app.use('/api/users', usersRouter);
 app.use('/api/dvr-servers', dvrServersRouter);
 app.use('/api/devices', devicesRouter);
 app.use('/api/dashboard', dashboardRouter);
+app.use('/api/tokens/smartyard-links', smartYardLinksRouter);
 app.use('/api/tokens', tokensRouter);
 app.use('/api/camera-groups', cameraGroupsRouter);
 app.use('/api/cameras', camerasRouter);
