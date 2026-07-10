@@ -3,6 +3,8 @@ set -euo pipefail
 
 PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video-master}"
 ENV_FILE="${ENV_FILE:-/etc/newdomofon-video/app.env}"
+INSTALL_DISK_GUARD="${INSTALL_DISK_GUARD:-1}"
+INSTALL_JOURNAL_LIMITS="${INSTALL_JOURNAL_LIMITS:-1}"
 
 if [[ "$(id -u)" -ne 0 ]]; then
   echo "Run as root: sudo PROJECT_DIR=$PROJECT_DIR bash scripts/deploy-master.sh" >&2
@@ -60,10 +62,18 @@ cp "$PROJECT_DIR/deploy/nginx/newdomofon-video.conf" /etc/nginx/sites-available/
 ln -sf /etc/nginx/sites-available/newdomofon-video.conf /etc/nginx/sites-enabled/newdomofon-video.conf
 
 systemctl daemon-reload
-systemctl enable --now newdomofon-video-backend
-systemctl enable --now newdomofon-public-events-proxy
+systemctl enable newdomofon-video-backend
+systemctl restart newdomofon-video-backend
+systemctl enable newdomofon-public-events-proxy
+systemctl restart newdomofon-public-events-proxy
 if [[ -f /etc/systemd/system/newdomofon-smartyard-compat.service ]]; then
-  systemctl enable --now newdomofon-smartyard-compat
+  systemctl enable newdomofon-smartyard-compat
+  systemctl restart newdomofon-smartyard-compat
+fi
+
+if [[ "$INSTALL_DISK_GUARD" =~ ^(1|true|yes|on)$ ]]; then
+  PROJECT_DIR="$PROJECT_DIR" INSTALL_JOURNAL_LIMITS="$INSTALL_JOURNAL_LIMITS" \
+    bash "$PROJECT_DIR/scripts/install-master-disk-guard.sh"
 fi
 
 # Strict master/node deployment rule: master must not record cameras.
@@ -77,3 +87,6 @@ nginx -t
 systemctl reload nginx
 
 echo "Master deployed. DVR service is disabled on strict master deployments."
+if [[ "$INSTALL_DISK_GUARD" =~ ^(1|true|yes|on)$ ]]; then
+  echo "Disk guard: cat /run/newdomofon-video/master-disk-state.json"
+fi
