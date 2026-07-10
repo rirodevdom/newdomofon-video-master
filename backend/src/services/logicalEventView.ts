@@ -29,7 +29,10 @@ export function logicalEventView(
   options: { includeInactive?: boolean; dedupMs?: number } = {}
 ): CameraEventRecord[] {
   const includeInactive = options.includeInactive === true;
-  const dedupMs = Math.max(100, Math.min(10_000, Math.trunc(options.dedupMs ?? 2000)));
+  const configuredDedupMs = Number(options.dedupMs ?? 2000);
+  const dedupMs = Number.isFinite(configuredDedupMs)
+    ? Math.max(100, Math.min(10_000, Math.trunc(configuredDedupMs)))
+    : 2000;
   const lastByKey = new Map<string, number>();
   const items: CameraEventRecord[] = [];
 
