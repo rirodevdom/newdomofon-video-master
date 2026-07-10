@@ -14,7 +14,7 @@ function permanentMediaLinkVersion(): string | null {
   return value || null;
 }
 
-export type NodeMediaScope = 'camera' | 'live' | 'archive' | 'export' | 'file' | 'status';
+export type NodeMediaScope = 'camera' | 'live' | 'archive' | 'export' | 'file' | 'status' | 'events';
 
 export interface NodeMediaTokenPayload {
   stream_name: string;
@@ -39,7 +39,8 @@ function signPayload(secret: string, payload: object): string {
 export function signNodeMediaToken(secret: string, payload: Omit<NodeMediaTokenPayload, 'exp'>, ttlSeconds = config.playbackTokenTtlSeconds): string {
   const cleanPayload: NodeMediaTokenPayload = { ...payload };
 
-  if (permanentMediaLinksEnabled()) {
+  const permanentEligible = ['camera', 'live', 'archive'].includes(cleanPayload.scope);
+  if (permanentMediaLinksEnabled() && permanentEligible) {
     delete cleanPayload.exp;
     const version = permanentMediaLinkVersion();
     if (version) cleanPayload.link_version = version;
