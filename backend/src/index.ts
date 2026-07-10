@@ -17,6 +17,7 @@ import { auditRouter } from './routes/audit.js';
 import { eventsRouter, internalEventsRouter } from './routes/events.js';
 import { onvifRouter } from './routes/onvif.js';
 import { errorHandler } from './middleware/errorHandler.js';
+import { diskProtectionMiddleware, getMasterDiskState } from './middleware/diskProtection.js';
 import { cleanupExpiredPlaybackTokens } from './services/tokenCleanup.js';
 import { playbackTokensRouter } from './routes/playbackTokens.js';
 import { playerCompatRouter } from './routes/playerCompat.js';
@@ -37,6 +38,7 @@ app.disable('x-powered-by');
 if (config.trustProxy) app.set('trust proxy', 1);
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(cors({ origin: config.corsOrigin, credentials: true }));
+app.use(diskProtectionMiddleware);
 app.use(express.json({ limit: '1mb' }));
 app.use('/api', emptyCameraEventsGuardRouter);
 app.use('/api/playback-tokens', playbackTokensRouter);
@@ -46,7 +48,16 @@ app.use('/api/public-media', mediaGlobalPublicTokenRouter);
 app.use(morgan('combined'));
 app.use(rateLimit({ windowMs: 60_000, limit: 600, standardHeaders: 'draft-7', legacyHeaders: false }));
 
-app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'backend' }));
+app.get('/api/health', (_req, res) => {
+  const disk = getMasterDiskState();
+  const degraded = disk.state === 'critical';
+  res.json({
+    ok: !degraded,
+    degraded,
+    service: 'backend',
+    disk
+  });
+});
 
 // Internal SmartYard resolver validates a public camera link against the
 // media_secret of the camera's assigned node and never exposes that secret.
