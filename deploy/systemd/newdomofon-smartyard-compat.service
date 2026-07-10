@@ -1,5 +1,5 @@
 [Unit]
-Description=NewDomofon SmartYard Compatibility Gateway
+Description=NewDomofon SmartYard Media and Event Gateway
 Documentation=file:/opt/newdomofon-video-master/README.md
 After=network-online.target newdomofon-video-backend.service
 Wants=network-online.target newdomofon-video-backend.service
@@ -13,9 +13,10 @@ EnvironmentFile=/etc/newdomofon-video/app.env
 Environment=NODE_ENV=production
 Environment=SMARTYARD_COMPAT_PORT=3082
 Environment=SMARTYARD_LEGACY_PORT=3083
+Environment=SMARTYARD_MEDIA_GATEWAY_PORT=3084
 Environment=SMARTYARD_BACKEND_URL=http://127.0.0.1:3000
 Environment=DVR_ENGINE_URL=http://127.0.0.1:3010
-ExecStart=/usr/bin/node /opt/newdomofon-video-master/smartyard-compat-proxy/server-node-aware.js
+ExecStart=/usr/bin/node /opt/newdomofon-video-master/smartyard-compat-proxy/server-events-gateway.js
 Restart=always
 RestartSec=3
 TimeoutStopSec=20

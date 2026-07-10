@@ -6,9 +6,11 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 
 export const internalSmartYardRouter = Router();
 
+const upstreamScopeSchema = z.enum(['camera', 'events']);
 const resolveSchema = z.object({
   token: z.string().min(16),
-  stream_name: z.string().min(1).max(255).optional()
+  stream_name: z.string().min(1).max(255).optional(),
+  upstream_scope: upstreamScopeSchema.optional().default('camera')
 });
 
 const cameraIdSchema = z.string().uuid();
@@ -155,7 +157,7 @@ internalSmartYardRouter.post('/resolve', asyncHandler(async (req, res) => {
     camera_id: camera.camera_id,
     stream_name: camera.stream_name,
     user_id: String(parsed.payload.user_id || 'smartyard-compat'),
-    scope: 'camera',
+    scope: body.upstream_scope,
     iat: now,
     exp: now + ttlSeconds
   });
@@ -174,6 +176,7 @@ internalSmartYardRouter.post('/resolve', asyncHandler(async (req, res) => {
       url: nodeUrl
     },
     upstream_token: upstreamToken,
+    upstream_scope: body.upstream_scope,
     expires_in: ttlSeconds,
     token_source: tokenSource
   });
