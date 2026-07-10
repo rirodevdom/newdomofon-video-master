@@ -29,6 +29,7 @@ import { devicesRouter } from './routes/devices.js';
 import { dashboardRouter } from './routes/dashboard.js';
 import { tokensRouter } from './routes/tokens.js';
 import { smartYardLinksRouter } from './routes/smartyardLinks.js';
+import { internalSmartYardRouter } from './routes/internalSmartYard.js';
 
 const app = express();
 
@@ -46,6 +47,10 @@ app.use(morgan('combined'));
 app.use(rateLimit({ windowMs: 60_000, limit: 600, standardHeaders: 'draft-7', legacyHeaders: false }));
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'backend' }));
+
+// Internal SmartYard resolver validates a public camera link against the
+// media_secret of the camera's assigned node and never exposes that secret.
+app.use('/api/internal/smartyard', internalSmartYardRouter);
 
 // The explicit 410 event-ingest routes must be mounted before legacy internal
 // helpers so master can never persist camera event payloads again.
