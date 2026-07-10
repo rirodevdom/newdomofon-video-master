@@ -5,6 +5,7 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import type { AuthRequest } from '../types.js';
 import { canAccessCamera } from '../services/cameraAccess.js';
 import { fetchNodeEvents, getCameraEventTarget } from '../services/nodeEventProxy.js';
+import { logicalEventView, type CameraEventRecord } from '../services/logicalEventView.js';
 
 export const eventsRouter = Router();
 export const internalEventsRouter = Router();
@@ -16,7 +17,10 @@ const rangeSchema = z.object({
 });
 const eventsQuerySchema = rangeSchema.extend({
   type: z.string().min(1).max(128).optional(),
-  limit: z.coerce.number().int().min(1).max(5000).optional()
+  limit: z.coerce.number().int().min(1).max(5000).optional(),
+  mode: z.enum(['logical', 'raw']).optional().default('logical'),
+  include_inactive: z.enum(['0', '1', 'false', 'true']).optional(),
+  dedup_ms: z.coerce.number().int().min(100).max(10_000).optional()
 });
 
 function validateRange(start: string, end: string): void {
@@ -36,11 +40,33 @@ function validateRange(start: string, end: string): void {
   }
 }
 
+function asFlag(value: string | undefined): boolean {
+  return value === '1' || value === 'true';
+}
+
+function logicalBody(body: string, includeInactive: boolean, dedupMs: number): string {
+  try {
+    const parsed = JSON.parse(body) as { items?: CameraEventRecord[]; [key: string]: unknown };
+    const rawItems = Array.isArray(parsed.items) ? parsed.items : [];
+    const items = logicalEventView(rawItems, { includeInactive, dedupMs });
+    return JSON.stringify({
+      ...parsed,
+      mode: 'logical',
+      count: items.length,
+      raw_count: rawItems.length,
+      items
+    });
+  } catch {
+    return body;
+  }
+}
+
 async function proxyRoute(
   req: AuthRequest,
   res: any,
   suffix: 'events' | 'events/summary',
-  query: Record<string, string>
+  query: Record<string, string>,
+  view?: { mode: 'logical' | 'raw'; includeInactive: boolean; dedupMs: number }
 ) {
   const { cameraId } = paramsSchema.parse(req.params);
 
@@ -58,9 +84,13 @@ async function proxyRoute(
     query
   });
 
+  const body = result.ok && suffix === 'events' && view?.mode === 'logical'
+    ? logicalBody(result.body, view.includeInactive, view.dedupMs)
+    : result.body;
+
   res.setHeader('cache-control', 'no-store');
   res.type(result.contentType);
-  return res.status(result.status).send(result.body);
+  return res.status(result.status).send(body);
 }
 
 eventsRouter.use(requireAuth);
@@ -73,6 +103,10 @@ eventsRouter.get('/cameras/:cameraId/events', asyncHandler(async (req, res) => {
     end: q.end,
     ...(q.type ? { type: q.type } : {}),
     ...(q.limit ? { limit: String(q.limit) } : {})
+  }, {
+    mode: q.mode,
+    includeInactive: asFlag(q.include_inactive),
+    dedupMs: q.dedup_ms ?? Math.max(100, Math.min(10_000, Number(process.env.EVENT_LOGICAL_DEDUP_MS || 2000)))
   });
 }));
 
