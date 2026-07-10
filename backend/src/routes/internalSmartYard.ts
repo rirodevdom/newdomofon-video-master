@@ -11,6 +11,9 @@ const resolveSchema = z.object({
   stream_name: z.string().min(1).max(255).optional()
 });
 
+const cameraIdSchema = z.string().uuid();
+const streamNameSchema = z.string().regex(/^[A-Za-z0-9_-]+$/).max(255);
+
 type CameraNodeRow = {
   camera_id: string;
   camera_name: string;
@@ -84,13 +87,16 @@ internalSmartYardRouter.post('/resolve', asyncHandler(async (req, res) => {
   const parsed = parseToken(body.token);
   if (!parsed) return res.status(401).json({ error: 'Invalid playback token' });
 
-  const cameraId = String(parsed.payload.camera_id || '').trim();
-  const payloadStream = String(parsed.payload.stream_name || '').trim();
+  const cameraIdResult = cameraIdSchema.safeParse(String(parsed.payload.camera_id || '').trim());
+  const payloadStreamResult = streamNameSchema.safeParse(String(parsed.payload.stream_name || '').trim());
   const payloadScope = String(parsed.payload.scope || '').trim();
 
-  if (!cameraId || !payloadStream || !['camera', 'live', 'archive'].includes(payloadScope)) {
+  if (!cameraIdResult.success || !payloadStreamResult.success || !['camera', 'live', 'archive'].includes(payloadScope)) {
     return res.status(401).json({ error: 'Invalid playback token payload' });
   }
+
+  const cameraId = cameraIdResult.data;
+  const payloadStream = payloadStreamResult.data;
 
   if (body.stream_name && body.stream_name !== payloadStream) {
     return res.status(403).json({ error: 'Token stream mismatch' });
