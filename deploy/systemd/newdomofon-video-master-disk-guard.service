@@ -17,5 +17,3 @@ PrivateTmp=false
 ProtectHome=true
 ProtectSystem=full
 ReadWritePaths=/run/newdomofon-video /run/lock /var/log/newdomofon-video /tmp /var/tmp /var/cache/apt
-CapabilityBoundingSet=
-AmbientCapabilities=
