@@ -25,6 +25,15 @@ set -a
 . "$ENV_FILE"
 set +a
 
+if [[ "$INSTALL_DISK_GUARD" =~ ^(1|true|yes|on)$ ]]; then
+  NEWDOMOFON_ENV_FILE="$ENV_FILE" bash "$PROJECT_DIR/scripts/master-disk-guard.sh"
+  if [[ -e /run/newdomofon-video/master-disk-critical ]]; then
+    echo "Deployment aborted before npm/migrations: master disk guard is critical." >&2
+    cat /run/newdomofon-video/master-disk-state.json >&2 2>/dev/null || true
+    exit 75
+  fi
+fi
+
 cd "$PROJECT_DIR/backend"
 npm ci --include=dev
 npm run build
