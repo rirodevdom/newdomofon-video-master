@@ -58,6 +58,36 @@ function publicFields(input: Record<string, unknown>) {
   return clone;
 }
 
+function uniqueNodeIds(values: Array<string | null | undefined>): string[] {
+  return Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean)));
+}
+
+async function queueNodeCameraReload(
+  nodeIds: Array<string | null | undefined>,
+  payload: Record<string, unknown>
+): Promise<number> {
+  const ids = uniqueNodeIds(nodeIds);
+  if (!ids.length) return 0;
+
+  await query(
+    `UPDATE dvr_servers
+        SET config_generation = config_generation + 1
+      WHERE id = ANY($1::uuid[])`,
+    [ids]
+  );
+
+  const result = await query(
+    `INSERT INTO node_commands(dvr_server_id, type, payload)
+     SELECT id, 'reload_cameras', $2::jsonb
+       FROM dvr_servers
+      WHERE id = ANY($1::uuid[])
+     RETURNING id`,
+    [ids, JSON.stringify(payload)]
+  );
+
+  return result.rowCount || 0;
+}
+
 const cameraSelect = `
   c.id, c.group_id, c.dvr_server_id, c.device_id, c.name, c.stream_name, c.source_url,
   c.archive_storage, c.rtmp_push_url, c.latitude, c.longitude, c.direction_deg, c.fov_deg, c.retention_days,
@@ -120,14 +150,14 @@ camerasRouter.post('/', requireRole('super_admin', 'operator'), asyncHandler(asy
   const device = await query<{ id: string }>('SELECT id FROM devices WHERE id = $1', [body.device_id]);
   if (!device.rowCount) return res.status(400).json({ error: 'Device is required for camera' });
 
-  const result = await query<{ id: string }>(
+  const result = await query<{ id: string; dvr_server_id: string | null }>(
     `INSERT INTO cameras(
        name, stream_name, source_url, group_id, dvr_server_id, device_id, rtmp_push_url,
        latitude, longitude, direction_deg, fov_deg, archive_storage, retention_days, is_enabled,
        onvif_xaddr, onvif_port, onvif_username, onvif_password, onvif_profile_token, onvif_device_info, onvif_last_sync_at
      )
      VALUES ($1,$2,$3,$4,$5,$6,NULL,NULL,NULL,NULL,NULL,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
-     RETURNING id`,
+     RETURNING id, dvr_server_id`,
     [
       body.name, body.stream_name, body.source_url, body.group_id ?? null, body.dvr_server_id ?? null, body.device_id,
       body.archive_storage, body.retention_days, body.is_enabled,
@@ -135,11 +165,19 @@ camerasRouter.post('/', requireRole('super_admin', 'operator'), asyncHandler(asy
     ]
   );
 
-  await audit(req, 'camera.create', 'camera', result.rows[0].id, {
-    stream_name: body.stream_name,
-    type: body.onvif_xaddr ? 'onvif' : 'rtsp'
+  const cameraId = result.rows[0].id;
+  const reloadCommands = await queueNodeCameraReload([result.rows[0].dvr_server_id], {
+    reason: 'camera_created',
+    camera_id: cameraId,
+    stream_name: body.stream_name
   });
-  res.status(201).json({ id: result.rows[0].id });
+
+  await audit(req, 'camera.create', 'camera', cameraId, {
+    stream_name: body.stream_name,
+    type: body.onvif_xaddr ? 'onvif' : 'rtsp',
+    reload_commands: reloadCommands
+  });
+  res.status(201).json({ id: cameraId, reload_queued: reloadCommands > 0 });
 }));
 
 async function updateCamera(req: AuthRequest, res: any) {
@@ -153,14 +191,24 @@ async function updateCamera(req: AuthRequest, res: any) {
     if (!device.rowCount) return res.status(400).json({ error: 'Device not found' });
   }
 
-  const existingResult = await query(
-    `SELECT id, source_url, onvif_xaddr, onvif_port, onvif_username, onvif_password
+  const existingResult = await query<{
+    id: string;
+    source_url: string;
+    onvif_xaddr: string | null;
+    onvif_port: number | null;
+    onvif_username: string | null;
+    onvif_password: string | null;
+    dvr_server_id: string | null;
+    stream_name: string;
+  }>(
+    `SELECT id, source_url, onvif_xaddr, onvif_port, onvif_username, onvif_password, dvr_server_id, stream_name
        FROM cameras
       WHERE id = $1`,
     [req.params.id]
   );
 
   if (!existingResult.rowCount) return res.status(404).json({ error: 'Camera not found' });
+  const existing = existingResult.rows[0];
 
   if (body.onvif_xaddr && body.source_url !== undefined && raw._onvif_requery !== true) {
     return res.status(409).json({
@@ -171,19 +219,53 @@ async function updateCamera(req: AuthRequest, res: any) {
   const allowed = publicFields(body);
   const fields = Object.entries(allowed).filter(([, v]) => v !== undefined);
 
-  if (!fields.length) return res.json({ ok: true });
+  if (!fields.length) return res.json({ ok: true, reload_queued: false });
 
   const sets = fields.map(([key], idx) => `${key} = $${idx + 2}`).join(', ');
-  await query(`UPDATE cameras SET ${sets} WHERE id = $1`, [req.params.id, ...fields.map(([, v]) => v)]);
-  await audit(req, 'camera.update', 'camera', req.params.id, { fields: fields.map(([key]) => key) });
-  res.json({ ok: true });
+  const updated = await query<{ dvr_server_id: string | null; stream_name: string }>(
+    `UPDATE cameras
+        SET ${sets}
+      WHERE id = $1
+      RETURNING dvr_server_id, stream_name`,
+    [req.params.id, ...fields.map(([, v]) => v)]
+  );
+
+  const current = updated.rows[0];
+  const reloadCommands = await queueNodeCameraReload(
+    [existing.dvr_server_id, current?.dvr_server_id],
+    {
+      reason: 'camera_updated',
+      camera_id: req.params.id,
+      old_stream_name: existing.stream_name,
+      stream_name: current?.stream_name || existing.stream_name,
+      fields: fields.map(([key]) => key)
+    }
+  );
+
+  await audit(req, 'camera.update', 'camera', req.params.id, {
+    fields: fields.map(([key]) => key),
+    reload_commands: reloadCommands
+  });
+  res.json({ ok: true, reload_queued: reloadCommands > 0 });
 }
 
 camerasRouter.patch('/:id', requireRole('super_admin', 'operator'), asyncHandler(updateCamera));
 camerasRouter.put('/:id', requireRole('super_admin', 'operator'), asyncHandler(updateCamera));
 
 camerasRouter.delete('/:id', requireRole('super_admin'), asyncHandler(async (req, res) => {
+  const existing = await query<{ dvr_server_id: string | null; stream_name: string }>(
+    'SELECT dvr_server_id, stream_name FROM cameras WHERE id = $1',
+    [req.params.id]
+  );
+  if (!existing.rowCount) return res.status(404).json({ error: 'Camera not found' });
+
   await query('DELETE FROM cameras WHERE id = $1', [req.params.id]);
-  await audit(req, 'camera.delete', 'camera', req.params.id);
-  res.json({ ok: true });
+  const reloadCommands = await queueNodeCameraReload([existing.rows[0].dvr_server_id], {
+    reason: 'camera_deleted',
+    camera_id: req.params.id,
+    stream_name: existing.rows[0].stream_name
+  });
+
+  await audit(req, 'camera.delete', 'camera', req.params.id, { reload_commands: reloadCommands });
+  res.json({ ok: true, reload_queued: reloadCommands > 0 });
 }));
