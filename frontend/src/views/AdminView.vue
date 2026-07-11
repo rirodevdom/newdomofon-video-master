@@ -188,7 +188,7 @@
         <v-card class="mt-4">
           <v-card-title>Ссылки камер</v-card-title>
           <v-card-subtitle class="pb-3">
-            Выберите заранее созданный токен. Кнопка только привяжет его к камере и покажет ссылки — новый токен не создаётся.
+            Текущая привязка восстанавливается автоматически. Выберите другой токен и откройте ссылки, чтобы перепривязать камеру.
           </v-card-subtitle>
           <v-table>
             <thead>
@@ -197,7 +197,7 @@
                 <th>Stream</th>
                 <th>Node</th>
                 <th>Режим</th>
-                <th style="min-width: 260px">Токен</th>
+                <th style="min-width: 300px">Токен</th>
                 <th></th>
               </tr>
             </thead>
@@ -211,28 +211,34 @@
                   <td>
                     <v-select
                       v-model="cameraTokenSelection[camera.id]"
-                      :items="availableManagedTokens"
-                      item-title="name"
+                      :items="cameraManagedTokenOptions"
+                      item-title="option_title"
                       item-value="id"
                       density="compact"
                       hide-details
-                      clearable
                       placeholder="Выберите токен"
+                      @update:model-value="onCameraTokenSelectionChange(camera)"
                     >
                       <template #item="{ props, item }">
                         <v-list-item v-bind="props" :subtitle="tokenOptionSubtitle(item.raw)" />
                       </template>
                     </v-select>
+                    <div v-if="camera.managed_token_id" class="text-caption mt-1">
+                      Сейчас привязан:
+                      <strong>{{ camera.managed_token_name || managedTokenName(camera.managed_token_id) }}</strong>
+                    </div>
+                    <div v-else class="text-caption text-medium-emphasis mt-1">Токен пока не привязан</div>
                   </td>
                   <td class="text-right">
                     <v-btn
                       size="small"
                       variant="tonal"
-                      :disabled="!cameraTokenSelection[camera.id]"
+                      :color="isCameraTokenReassignment(camera) ? 'warning' : 'primary'"
+                      :disabled="!canOpenCameraLinks(camera)"
                       :loading="openingCameraLinks === camera.id"
                       @click="openCameraLinks(camera)"
                     >
-                      Открыть ссылки
+                      {{ cameraLinkActionLabel(camera) }}
                     </v-btn>
                   </td>
                 </tr>
@@ -322,10 +328,19 @@ const userForm = reactive({
   group_ids: []
 });
 
-const availableManagedTokens = computed(() => managedTokens.value.filter((token) => {
-  if (!token.is_active || !token.scopes?.includes('camera')) return false;
+function isManagedTokenUsable(token: any) {
+  if (!token?.is_active || !token.scopes?.includes('camera')) return false;
   return !token.expires_at || new Date(token.expires_at).getTime() > Date.now();
-}));
+}
+
+const cameraManagedTokenOptions = computed(() => managedTokens.value
+  .filter((token) => token.scopes?.includes('camera'))
+  .map((token) => ({
+    ...token,
+    option_title: isManagedTokenUsable(token)
+      ? token.name
+      : `${token.name} (${managedTokenStatus(token).text})`
+  })));
 
 const rotatedTokenText = computed(() => {
   if (!rotatedToken.value) return '';
@@ -355,10 +370,43 @@ function managedTokenStatus(token: any) {
   return { text: 'активен', color: 'success' };
 }
 
+function managedTokenName(tokenId: string | null | undefined) {
+  return managedTokens.value.find((token) => token.id === tokenId)?.name || tokenId || 'неизвестный токен';
+}
+
 function tokenOptionSubtitle(token: any) {
   const cameras = token.assigned_cameras?.length || 0;
   const expiry = token.expires_at ? new Date(token.expires_at).toLocaleString() : 'без срока';
   return `${cameras} камер · ${expiry}`;
+}
+
+function selectedManagedToken(camera: any) {
+  return managedTokens.value.find((token) => token.id === cameraTokenSelection[camera.id]) || null;
+}
+
+function canOpenCameraLinks(camera: any) {
+  return isManagedTokenUsable(selectedManagedToken(camera));
+}
+
+function isCameraTokenReassignment(camera: any) {
+  const selected = cameraTokenSelection[camera.id];
+  return Boolean(camera.managed_token_id && selected && camera.managed_token_id !== selected);
+}
+
+function cameraLinkActionLabel(camera: any) {
+  const selected = cameraTokenSelection[camera.id];
+  if (!selected) return 'Выберите токен';
+  if (!camera.managed_token_id) return 'Привязать и открыть';
+  if (camera.managed_token_id !== selected) return 'Перепривязать и открыть';
+  return 'Показать ссылки';
+}
+
+function onCameraTokenSelectionChange(camera: any) {
+  if (generatedCameraLinks.value[camera.id]) {
+    const next = { ...generatedCameraLinks.value };
+    delete next[camera.id];
+    generatedCameraLinks.value = next;
+  }
 }
 
 async function loadUsers() {
@@ -370,8 +418,32 @@ async function loadTokens() {
     api.get('/tokens'),
     api.get('/tokens/managed-camera-tokens')
   ]);
-  tokens.value = systemResponse.data;
-  managedTokens.value = managedResponse.data.items || [];
+
+  const systemTokens = systemResponse.data || {};
+  const nextManagedTokens = managedResponse.data.items || [];
+  const assignments = new Map<string, { id: string; name: string }>();
+
+  for (const token of nextManagedTokens) {
+    for (const camera of token.assigned_cameras || []) {
+      assignments.set(camera.id, { id: token.id, name: token.name });
+    }
+  }
+
+  const cameraIds = new Set<string>();
+  for (const camera of systemTokens.camera_links || []) {
+    cameraIds.add(camera.id);
+    const assignment = assignments.get(camera.id) || null;
+    camera.managed_token_id = assignment?.id || null;
+    camera.managed_token_name = assignment?.name || null;
+    cameraTokenSelection[camera.id] = assignment?.id || null;
+  }
+
+  for (const cameraId of Object.keys(cameraTokenSelection)) {
+    if (!cameraIds.has(cameraId)) delete cameraTokenSelection[cameraId];
+  }
+
+  tokens.value = systemTokens;
+  managedTokens.value = nextManagedTokens;
 }
 
 async function load() {
@@ -505,7 +577,12 @@ async function openCameraLinks(camera: any) {
       ...generatedCameraLinks.value,
       [camera.id]: response.data
     };
-    notify('Ссылки открыты с выбранным токеном');
+
+    const wasReassigned = Boolean(
+      response.data.assignment_changed &&
+      response.data.previous_managed_token_id
+    );
+    notify(wasReassigned ? 'Токен камеры перепривязан, ссылки обновлены' : 'Ссылки открыты с текущим токеном');
     await loadTokens();
   } catch (err: any) {
     notify(err.response?.data?.error || err.message || 'Ошибка открытия ссылок камеры', 'error');
