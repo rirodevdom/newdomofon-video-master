@@ -7,7 +7,9 @@
       <v-tab value="tokens">Токены</v-tab>
     </v-tabs>
 
-    <v-alert v-if="message" :type="messageType" variant="tonal" class="my-4" closable @click:close="message = ''">{{ message }}</v-alert>
+    <v-alert v-if="message" :type="messageType" variant="tonal" class="my-4" closable @click:close="message = ''">
+      {{ message }}
+    </v-alert>
 
     <v-window v-model="tab" class="mt-4">
       <v-window-item value="users">
@@ -28,21 +30,15 @@
             <tbody>
               <tr v-for="user in users" :key="user.id">
                 <td>{{ user.login }}</td>
-                <td>
-                  <v-select v-model="user.role" :items="roles" density="compact" hide-details style="max-width: 180px" @update:model-value="patchUser(user, { role: user.role })" />
-                </td>
-                <td>
-                  <v-switch v-model="user.is_active" color="primary" density="compact" hide-details @update:model-value="patchUser(user, { is_active: user.is_active })" />
-                </td>
+                <td><v-select v-model="user.role" :items="roles" density="compact" hide-details style="max-width: 180px" @update:model-value="patchUser(user, { role: user.role })" /></td>
+                <td><v-switch v-model="user.is_active" color="primary" density="compact" hide-details @update:model-value="patchUser(user, { is_active: user.is_active })" /></td>
                 <td>{{ formatDate(user.created_at) }}</td>
                 <td class="text-right">
                   <v-btn size="small" variant="tonal" @click="openPasswordReset(user)">Сброс пароля</v-btn>
                   <v-btn size="small" color="error" variant="tonal" class="ml-2" @click="removeUser(user)">Удалить</v-btn>
                 </td>
               </tr>
-              <tr v-if="!users.length">
-                <td colspan="5" class="text-center text-medium-emphasis py-6">Пользователи не найдены</td>
-              </tr>
+              <tr v-if="!users.length"><td colspan="5" class="text-center text-medium-emphasis py-6">Пользователи не найдены</td></tr>
             </tbody>
           </v-table>
         </v-card>
@@ -54,7 +50,7 @@
             <v-card>
               <v-card-title>Системные токены</v-card-title>
               <v-table>
-                <thead><tr><th>Тип</th><th>Статус</th><th>Последнее использование</th></tr></thead>
+                <thead><tr><th>Тип</th><th>Состояние</th><th>Последнее использование</th></tr></thead>
                 <tbody>
                   <tr>
                     <td>Node registration token</td>
@@ -72,7 +68,7 @@
           </v-col>
           <v-col cols="12" md="6">
             <v-alert type="info" variant="tonal">
-              Системные секреты не показываются после создания. Управляемые токены камер создаются отдельно ниже и выбираются при открытии ссылок.
+              Один управляемый токен можно привязать к нескольким камерам, и к одной камере можно одновременно привязать несколько токенов.
             </v-alert>
           </v-col>
         </v-row>
@@ -97,28 +93,13 @@
         <v-card class="mt-4 pa-4">
           <v-card-title class="px-0">Создать управляемый токен камер</v-card-title>
           <v-row>
-            <v-col cols="12" md="3">
-              <v-text-field v-model="managedTokenForm.name" label="Название токена" placeholder="SmartYard Иваново" />
-            </v-col>
-            <v-col cols="12" md="4">
-              <v-text-field v-model="managedTokenForm.description" label="Описание" placeholder="Для интеграции или клиента" />
-            </v-col>
-            <v-col cols="12" md="3">
-              <v-text-field v-model="managedTokenForm.expires_at" type="datetime-local" label="Истекает (необязательно)" />
-            </v-col>
-            <v-col cols="6" md="1">
-              <v-switch v-model="managedTokenForm.allow_camera" color="primary" label="Видео" hide-details />
-            </v-col>
-            <v-col cols="6" md="1">
-              <v-switch v-model="managedTokenForm.allow_events" color="primary" label="События" hide-details />
-            </v-col>
+            <v-col cols="12" md="3"><v-text-field v-model="managedTokenForm.name" label="Название токена" placeholder="SmartYard Иваново" /></v-col>
+            <v-col cols="12" md="4"><v-text-field v-model="managedTokenForm.description" label="Описание" placeholder="Для интеграции или клиента" /></v-col>
+            <v-col cols="12" md="3"><v-text-field v-model="managedTokenForm.expires_at" type="datetime-local" label="Истекает (необязательно)" /></v-col>
+            <v-col cols="6" md="1"><v-switch v-model="managedTokenForm.allow_camera" color="primary" label="Видео" hide-details /></v-col>
+            <v-col cols="6" md="1"><v-switch v-model="managedTokenForm.allow_events" color="primary" label="События" hide-details /></v-col>
           </v-row>
-          <v-btn
-            color="primary"
-            :loading="creatingManagedToken"
-            :disabled="!managedTokenForm.name.trim() || (!managedTokenForm.allow_camera && !managedTokenForm.allow_events)"
-            @click="createManagedToken"
-          >
+          <v-btn color="primary" :loading="creatingManagedToken" :disabled="!managedTokenForm.name.trim() || (!managedTokenForm.allow_camera && !managedTokenForm.allow_events)" @click="createManagedToken">
             Создать токен
           </v-btn>
         </v-card>
@@ -132,55 +113,29 @@
         <v-card class="mt-4">
           <v-card-title>Управляемые токены камер</v-card-title>
           <v-table>
-            <thead>
-              <tr>
-                <th>Название</th>
-                <th>Права</th>
-                <th>Статус</th>
-                <th>Камеры</th>
-                <th>Истекает</th>
-                <th>Последнее использование</th>
-                <th></th>
-              </tr>
-            </thead>
+            <thead><tr><th>Название</th><th>Права</th><th>Состояние</th><th>Камеры</th><th>Истекает</th><th>Последнее использование</th><th></th></tr></thead>
             <tbody>
               <tr v-for="token in managedTokens" :key="token.id">
                 <td>
                   <div class="font-weight-medium">{{ token.name }}</div>
                   <div v-if="token.description" class="text-caption text-medium-emphasis">{{ token.description }}</div>
                 </td>
-                <td>
-                  <v-chip v-for="scope in token.scopes" :key="scope" size="x-small" class="mr-1" variant="tonal">
-                    {{ scope === 'camera' ? 'Видео' : 'События' }}
-                  </v-chip>
-                </td>
-                <td>
-                  <v-chip size="small" :color="managedTokenStatus(token).color">{{ managedTokenStatus(token).text }}</v-chip>
-                </td>
+                <td><v-chip v-for="scope in token.scopes" :key="scope" size="x-small" class="mr-1" variant="tonal">{{ scope === 'camera' ? 'Видео' : 'События' }}</v-chip></td>
+                <td><v-chip size="small" :color="managedTokenStatus(token).color">{{ managedTokenStatus(token).text }}</v-chip></td>
                 <td>
                   <span>{{ token.assigned_cameras?.length || 0 }}</span>
-                  <div v-if="token.assigned_cameras?.length" class="text-caption text-medium-emphasis">
-                    {{ token.assigned_cameras.map((camera: any) => camera.name).join(', ') }}
-                  </div>
+                  <div v-if="token.assigned_cameras?.length" class="text-caption text-medium-emphasis">{{ token.assigned_cameras.map((camera: any) => camera.name).join(', ') }}</div>
                 </td>
                 <td>{{ formatDate(token.expires_at) }}</td>
                 <td>{{ formatOptionalDate(token.last_used_at) }}</td>
                 <td class="text-right" style="white-space: nowrap">
                   <v-btn size="small" variant="text" icon="mdi-content-copy" title="Копировать" @click="copyText(token.token)" />
                   <v-btn size="small" variant="text" icon="mdi-refresh" title="Ротировать" @click="rotateManagedToken(token)" />
-                  <v-btn
-                    size="small"
-                    variant="text"
-                    :icon="token.is_active ? 'mdi-pause-circle-outline' : 'mdi-play-circle-outline'"
-                    :title="token.is_active ? 'Отключить' : 'Включить'"
-                    @click="toggleManagedToken(token)"
-                  />
+                  <v-btn size="small" variant="text" :icon="token.is_active ? 'mdi-pause-circle-outline' : 'mdi-play-circle-outline'" :title="token.is_active ? 'Отключить' : 'Включить'" @click="toggleManagedToken(token)" />
                   <v-btn size="small" color="error" variant="text" icon="mdi-delete-outline" title="Удалить" @click="removeManagedToken(token)" />
                 </td>
               </tr>
-              <tr v-if="!managedTokens.length">
-                <td colspan="7" class="text-center text-medium-emphasis py-6">Управляемые токены ещё не созданы</td>
-              </tr>
+              <tr v-if="!managedTokens.length"><td colspan="7" class="text-center text-medium-emphasis py-6">Управляемые токены ещё не созданы</td></tr>
             </tbody>
           </v-table>
         </v-card>
@@ -188,18 +143,11 @@
         <v-card class="mt-4">
           <v-card-title>Ссылки камер</v-card-title>
           <v-card-subtitle class="pb-3">
-            Текущая привязка восстанавливается автоматически. Выберите другой токен и откройте ссылки, чтобы перепривязать камеру.
+            Выбор нового токена добавляет ещё одну привязку и не удаляет уже существующие. Все привязанные токены показаны под полем выбора.
           </v-card-subtitle>
           <v-table>
             <thead>
-              <tr>
-                <th>Камера</th>
-                <th>Stream</th>
-                <th>Node</th>
-                <th>Режим</th>
-                <th style="min-width: 300px">Токен</th>
-                <th></th>
-              </tr>
+              <tr><th>Камера</th><th>Stream</th><th>Node</th><th style="min-width: 380px">Токены</th><th></th></tr>
             </thead>
             <tbody>
               <template v-for="camera in tokens.camera_links || []" :key="camera.id">
@@ -207,7 +155,6 @@
                   <td>{{ camera.name }}</td>
                   <td><code>{{ camera.stream_name }}</code></td>
                   <td>{{ camera.node_name || 'master' }}</td>
-                  <td><v-chip size="small" color="primary" variant="tonal">managed-token</v-chip></td>
                   <td>
                     <v-select
                       v-model="cameraTokenSelection[camera.id]"
@@ -216,43 +163,44 @@
                       item-value="id"
                       density="compact"
                       hide-details
+                      clearable
                       placeholder="Выберите токен"
                       @update:model-value="onCameraTokenSelectionChange(camera)"
                     >
-                      <template #item="{ props, item }">
-                        <v-list-item v-bind="props" :subtitle="tokenOptionSubtitle(item.raw)" />
-                      </template>
+                      <template #item="{ props, item }"><v-list-item v-bind="props" :subtitle="tokenOptionSubtitle(item.raw)" /></template>
                     </v-select>
-                    <div v-if="camera.managed_token_id" class="text-caption mt-1">
-                      Сейчас привязан:
-                      <strong>{{ camera.managed_token_name || managedTokenName(camera.managed_token_id) }}</strong>
+                    <div v-if="camera.managed_tokens?.length" class="d-flex flex-wrap ga-1 mt-2">
+                      <v-chip
+                        v-for="assigned in camera.managed_tokens"
+                        :key="assigned.id"
+                        size="small"
+                        :color="isManagedTokenUsable(assigned) ? 'primary' : 'default'"
+                        variant="tonal"
+                        closable
+                        @click="selectAssignedToken(camera, assigned.id)"
+                        @click:close.stop="detachCameraToken(camera, assigned)"
+                      >
+                        {{ assigned.name }}
+                      </v-chip>
                     </div>
-                    <div v-else class="text-caption text-medium-emphasis mt-1">Токен пока не привязан</div>
+                    <div v-else class="text-caption text-medium-emphasis mt-1">Токены пока не привязаны</div>
                   </td>
                   <td class="text-right">
-                    <v-btn
-                      size="small"
-                      variant="tonal"
-                      :color="isCameraTokenReassignment(camera) ? 'warning' : 'primary'"
-                      :disabled="!canOpenCameraLinks(camera)"
-                      :loading="openingCameraLinks === camera.id"
-                      @click="openCameraLinks(camera)"
-                    >
+                    <v-btn size="small" variant="tonal" color="primary" :disabled="!canOpenCameraLinks(camera)" :loading="openingCameraLinks === camera.id" @click="openCameraLinks(camera)">
                       {{ cameraLinkActionLabel(camera) }}
                     </v-btn>
                   </td>
                 </tr>
                 <tr v-if="generatedCameraLinks[camera.id]">
-                  <td colspan="6" class="pb-4">
+                  <td colspan="5" class="pb-4">
                     <v-alert type="info" variant="tonal" density="compact" class="mb-2">
-                      Используется токен «{{ generatedCameraLinks[camera.id].managed_token?.name }}».
-                      Срок действия: {{ formatDate(generatedCameraLinks[camera.id].expires_at) }}.
+                      Используется токен «{{ generatedCameraLinks[camera.id].managed_token?.name }}». Остальные токены камеры продолжают работать.
                     </v-alert>
                     <v-textarea :model-value="generatedCameraLinks[camera.id].smartyard_url" label="Общая ссылка для SmartYard-Server" rows="2" readonly density="compact" />
                     <v-textarea :model-value="generatedCameraLinks[camera.id].live_url" label="Live HLS URL" rows="2" readonly density="compact" />
                     <v-textarea :model-value="generatedCameraLinks[camera.id].archive_url_template" label="Archive HLS URL template" rows="2" readonly density="compact" />
                     <v-textarea :model-value="generatedCameraLinks[camera.id].events_url_template" label="Events URL template" rows="2" readonly density="compact" />
-                    <div class="d-flex flex-wrap" style="gap: 8px">
+                    <div class="d-flex flex-wrap ga-2">
                       <v-btn size="small" color="primary" variant="tonal" @click="copyText(generatedCameraLinks[camera.id].smartyard_url)">Копировать SmartYard</v-btn>
                       <v-btn size="small" variant="tonal" @click="copyText(generatedCameraLinks[camera.id].live_url)">Копировать live</v-btn>
                       <v-btn size="small" variant="tonal" @click="copyText(generatedCameraLinks[camera.id].archive_url_template)">Копировать archive</v-btn>
@@ -262,9 +210,7 @@
                   </td>
                 </tr>
               </template>
-              <tr v-if="!(tokens.camera_links || []).length">
-                <td colspan="6" class="text-center text-medium-emphasis py-6">Камеры не найдены</td>
-              </tr>
+              <tr v-if="!(tokens.camera_links || []).length"><td colspan="5" class="text-center text-medium-emphasis py-6">Камеры не найдены</td></tr>
             </tbody>
           </v-table>
         </v-card>
@@ -280,11 +226,7 @@
       <v-card>
         <v-card-title>Сброс пароля: {{ selectedUser?.login }}</v-card-title>
         <v-card-text><v-text-field v-model="newPassword" label="Новый пароль" type="password" /></v-card-text>
-        <v-card-actions>
-          <v-spacer />
-          <v-btn variant="tonal" @click="passwordDialog = false">Отмена</v-btn>
-          <v-btn color="primary" @click="resetPassword">Сохранить</v-btn>
-        </v-card-actions>
+        <v-card-actions><v-spacer /><v-btn variant="tonal" @click="passwordDialog = false">Отмена</v-btn><v-btn color="primary" @click="resetPassword">Сохранить</v-btn></v-card-actions>
       </v-card>
     </v-dialog>
   </v-container>
@@ -312,21 +254,8 @@ const generatedCameraLinks = ref<Record<string, any>>({});
 const openingCameraLinks = ref<string | null>(null);
 const cameraTokenSelection = reactive<Record<string, string | null>>({});
 
-const managedTokenForm = reactive({
-  name: '',
-  description: '',
-  expires_at: '',
-  allow_camera: true,
-  allow_events: true
-});
-
-const userForm = reactive({
-  login: '',
-  password: '',
-  role: 'viewer',
-  is_active: true,
-  group_ids: []
-});
+const managedTokenForm = reactive({ name: '', description: '', expires_at: '', allow_camera: true, allow_events: true });
+const userForm = reactive({ login: '', password: '', role: 'viewer', is_active: true, group_ids: [] });
 
 function isManagedTokenUsable(token: any) {
   if (!token?.is_active || !token.scopes?.includes('camera')) return false;
@@ -337,9 +266,7 @@ const cameraManagedTokenOptions = computed(() => managedTokens.value
   .filter((token) => token.scopes?.includes('camera'))
   .map((token) => ({
     ...token,
-    option_title: isManagedTokenUsable(token)
-      ? token.name
-      : `${token.name} (${managedTokenStatus(token).text})`
+    option_title: isManagedTokenUsable(token) ? token.name : `${token.name} (${managedTokenStatus(token).text})`
   })));
 
 const rotatedTokenText = computed(() => {
@@ -370,10 +297,6 @@ function managedTokenStatus(token: any) {
   return { text: 'активен', color: 'success' };
 }
 
-function managedTokenName(tokenId: string | null | undefined) {
-  return managedTokens.value.find((token) => token.id === tokenId)?.name || tokenId || 'неизвестный токен';
-}
-
 function tokenOptionSubtitle(token: any) {
   const cameras = token.assigned_cameras?.length || 0;
   const expiry = token.expires_at ? new Date(token.expires_at).toLocaleString() : 'без срока';
@@ -384,29 +307,34 @@ function selectedManagedToken(camera: any) {
   return managedTokens.value.find((token) => token.id === cameraTokenSelection[camera.id]) || null;
 }
 
-function canOpenCameraLinks(camera: any) {
-  return isManagedTokenUsable(selectedManagedToken(camera));
+function cameraHasToken(camera: any, tokenId: string | null | undefined) {
+  return Boolean(tokenId && camera.managed_tokens?.some((token: any) => token.id === tokenId));
 }
 
-function isCameraTokenReassignment(camera: any) {
-  const selected = cameraTokenSelection[camera.id];
-  return Boolean(camera.managed_token_id && selected && camera.managed_token_id !== selected);
+function canOpenCameraLinks(camera: any) {
+  return isManagedTokenUsable(selectedManagedToken(camera));
 }
 
 function cameraLinkActionLabel(camera: any) {
   const selected = cameraTokenSelection[camera.id];
   if (!selected) return 'Выберите токен';
-  if (!camera.managed_token_id) return 'Привязать и открыть';
-  if (camera.managed_token_id !== selected) return 'Перепривязать и открыть';
-  return 'Показать ссылки';
+  return cameraHasToken(camera, selected) ? 'Показать ссылки' : 'Привязать и открыть';
+}
+
+function clearGeneratedCameraLinks(cameraId: string) {
+  if (!generatedCameraLinks.value[cameraId]) return;
+  const next = { ...generatedCameraLinks.value };
+  delete next[cameraId];
+  generatedCameraLinks.value = next;
 }
 
 function onCameraTokenSelectionChange(camera: any) {
-  if (generatedCameraLinks.value[camera.id]) {
-    const next = { ...generatedCameraLinks.value };
-    delete next[camera.id];
-    generatedCameraLinks.value = next;
-  }
+  clearGeneratedCameraLinks(camera.id);
+}
+
+function selectAssignedToken(camera: any, tokenId: string) {
+  cameraTokenSelection[camera.id] = tokenId;
+  clearGeneratedCameraLinks(camera.id);
 }
 
 async function loadUsers() {
@@ -414,28 +342,28 @@ async function loadUsers() {
 }
 
 async function loadTokens() {
-  const [systemResponse, managedResponse] = await Promise.all([
-    api.get('/tokens'),
-    api.get('/tokens/managed-camera-tokens')
-  ]);
-
+  const [systemResponse, managedResponse] = await Promise.all([api.get('/tokens'), api.get('/tokens/managed-camera-tokens')]);
   const systemTokens = systemResponse.data || {};
   const nextManagedTokens = managedResponse.data.items || [];
-  const assignments = new Map<string, { id: string; name: string }>();
+  const assignments = new Map<string, any[]>();
 
   for (const token of nextManagedTokens) {
     for (const camera of token.assigned_cameras || []) {
-      assignments.set(camera.id, { id: token.id, name: token.name });
+      const list = assignments.get(camera.id) || [];
+      list.push(token);
+      assignments.set(camera.id, list);
     }
   }
 
   const cameraIds = new Set<string>();
   for (const camera of systemTokens.camera_links || []) {
     cameraIds.add(camera.id);
-    const assignment = assignments.get(camera.id) || null;
-    camera.managed_token_id = assignment?.id || null;
-    camera.managed_token_name = assignment?.name || null;
-    cameraTokenSelection[camera.id] = assignment?.id || null;
+    camera.managed_tokens = assignments.get(camera.id) || [];
+    const selectedId = cameraTokenSelection[camera.id];
+    const selectedStillExists = nextManagedTokens.some((token: any) => token.id === selectedId);
+    if (!selectedStillExists) {
+      cameraTokenSelection[camera.id] = camera.managed_tokens.find((token: any) => isManagedTokenUsable(token))?.id || null;
+    }
   }
 
   for (const cameraId of Object.keys(cameraTokenSelection)) {
@@ -498,10 +426,7 @@ async function copyText(value: string | null | undefined) {
 async function createManagedToken() {
   creatingManagedToken.value = true;
   try {
-    const scopes = [
-      managedTokenForm.allow_camera ? 'camera' : null,
-      managedTokenForm.allow_events ? 'events' : null
-    ].filter(Boolean);
+    const scopes = [managedTokenForm.allow_camera ? 'camera' : null, managedTokenForm.allow_events ? 'events' : null].filter(Boolean);
     const response = await api.post('/tokens/managed-camera-tokens', {
       name: managedTokenForm.name,
       description: managedTokenForm.description || null,
@@ -509,13 +434,7 @@ async function createManagedToken() {
       expires_at: managedTokenForm.expires_at ? new Date(managedTokenForm.expires_at).toISOString() : null
     });
     createdManagedToken.value = response.data.item;
-    Object.assign(managedTokenForm, {
-      name: '',
-      description: '',
-      expires_at: '',
-      allow_camera: true,
-      allow_events: true
-    });
+    Object.assign(managedTokenForm, { name: '', description: '', expires_at: '', allow_camera: true, allow_events: true });
     notify('Управляемый токен создан');
     await loadTokens();
   } catch (err: any) {
@@ -561,28 +480,28 @@ async function removeManagedToken(token: any) {
   }
 }
 
+async function detachCameraToken(camera: any, token: any) {
+  if (!confirm(`Отвязать токен «${token.name}» от камеры «${camera.name}»?`)) return;
+  try {
+    await api.delete(`/tokens/managed-camera-tokens/${token.id}/cameras/${camera.id}`);
+    if (cameraTokenSelection[camera.id] === token.id) cameraTokenSelection[camera.id] = null;
+    clearGeneratedCameraLinks(camera.id);
+    notify('Токен отвязан от камеры');
+    await loadTokens();
+  } catch (err: any) {
+    notify(err.response?.data?.error || err.message || 'Ошибка отвязки токена', 'error');
+  }
+}
+
 async function openCameraLinks(camera: any) {
   const managedTokenId = cameraTokenSelection[camera.id];
-  if (!managedTokenId) {
-    notify('Сначала выберите токен', 'error');
-    return;
-  }
+  if (!managedTokenId) return notify('Сначала выберите токен', 'error');
 
   openingCameraLinks.value = camera.id;
   try {
-    const response = await api.post(`/tokens/camera-links/${camera.id}`, {
-      managed_token_id: managedTokenId
-    });
-    generatedCameraLinks.value = {
-      ...generatedCameraLinks.value,
-      [camera.id]: response.data
-    };
-
-    const wasReassigned = Boolean(
-      response.data.assignment_changed &&
-      response.data.previous_managed_token_id
-    );
-    notify(wasReassigned ? 'Токен камеры перепривязан, ссылки обновлены' : 'Ссылки открыты с текущим токеном');
+    const response = await api.post(`/tokens/camera-links/${camera.id}`, { managed_token_id: managedTokenId });
+    generatedCameraLinks.value = { ...generatedCameraLinks.value, [camera.id]: response.data };
+    notify(response.data.assignment_added ? 'Токен дополнительно привязан, ссылка открыта' : 'Ссылка открыта для выбранного токена');
     await loadTokens();
   } catch (err: any) {
     notify(err.response?.data?.error || err.message || 'Ошибка открытия ссылок камеры', 'error');
