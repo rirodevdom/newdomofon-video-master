@@ -19,6 +19,8 @@ const streamUriSchema = z.object({
   camera_id: z.string().uuid().optional(),
   cameraId: z.string().uuid().optional(),
   id: z.string().uuid().optional(),
+  device_id: z.string().uuid().optional(),
+  deviceId: z.string().uuid().optional(),
   ip: z.string().optional(),
   host: z.string().optional(),
   xaddr: z.string().optional(),
@@ -79,39 +81,57 @@ function parseRtspCredentials(sourceUrl: string | null | undefined) {
 
 async function cameraStoredConnectBody(cameraId: string): Promise<StoredConnectBody> {
   const result = await query(
-    `SELECT id, dvr_server_id, source_url, onvif_xaddr, onvif_port, onvif_username, onvif_password
-       FROM public.cameras
-      WHERE id = $1`,
+    `SELECT c.id, device.dvr_server_id, c.source_url, c.onvif_xaddr, c.onvif_port,
+            COALESCE(c.onvif_username, device.username) AS onvif_username,
+            COALESCE(c.onvif_password, device.password) AS onvif_password,
+            device.host AS device_host,
+            device.port AS device_port
+       FROM public.cameras c
+       JOIN public.devices device ON device.id = c.device_id
+      WHERE c.id = $1`,
     [cameraId]
   );
 
-  if (!result.rowCount) {
-    throw new Error('Camera not found');
-  }
+  if (!result.rowCount) throw new Error('Camera not found');
 
   const camera = result.rows[0] as any;
   const rtspCreds = parseRtspCredentials(camera.source_url);
-  const ip = cleanHostFromXaddr(camera.onvif_xaddr);
+  const ip = cleanHostFromXaddr(camera.onvif_xaddr) || String(camera.device_host || '').trim();
 
-  if (!ip) {
-    throw new Error('Camera has no ONVIF address saved');
-  }
-
-  const username = camera.onvif_username || rtspCreds.username || '';
-  const password = camera.onvif_password || rtspCreds.password || '';
-
-  if (!username || !password) {
-    throw new Error('Camera ONVIF credentials are not saved. Re-enter camera credentials once and save the camera.');
-  }
+  if (!ip) throw new Error('Camera device has no ONVIF address saved');
 
   return {
     body: {
       ip,
-      port: Number(camera.onvif_port || 80),
-      username,
-      password
+      port: Number(camera.onvif_port || camera.device_port || 80),
+      username: camera.onvif_username || rtspCreds.username || '',
+      password: camera.onvif_password || rtspCreds.password || ''
     },
     dvrServerId: camera.dvr_server_id || null
+  };
+}
+
+async function deviceStoredConnectBody(deviceId: string): Promise<StoredConnectBody> {
+  const result = await query(
+    `SELECT id, connection_type, dvr_server_id, host, port, username, password
+       FROM public.devices
+      WHERE id = $1`,
+    [deviceId]
+  );
+  if (!result.rowCount) throw new Error('Device not found');
+
+  const device = result.rows[0] as any;
+  if (device.connection_type !== 'ONVIF') throw new Error('Device is not ONVIF');
+  if (!device.host) throw new Error('Device has no ONVIF Host/IP configured');
+
+  return {
+    body: {
+      ip: String(device.host),
+      port: Number(device.port || 80),
+      username: String(device.username || ''),
+      password: String(device.password || '')
+    },
+    dvrServerId: device.dvr_server_id || null
   };
 }
 
@@ -173,7 +193,6 @@ async function resolveStreamUri(body: ConnectBody, dvrServerId?: string | null) 
 }
 
 onvifRouter.post('/connect', asyncHandler(async (req, res) => {
-  // Initial/manual ONVIF connect: credentials are intentionally taken from the submitted camera form.
   const body = connectSchema.parse(req.body || {});
   res.json(await resolveStreamUri(body));
 }));
@@ -181,16 +200,25 @@ onvifRouter.post('/connect', asyncHandler(async (req, res) => {
 onvifRouter.post('/stream-uri', asyncHandler(async (req, res) => {
   const raw = streamUriSchema.parse(req.body || {});
   const cameraId = raw.camera_id || raw.cameraId || raw.id;
+  const deviceId = raw.device_id || raw.deviceId;
 
-  // Existing camera RTSP requery: never trust username/password coming from the browser.
-  // Password managers can autofill the current web-account password into the camera password field.
-  // The backend must use only credentials already stored for this camera.
+  if (deviceId) {
+    try {
+      const stored = await deviceStoredConnectBody(deviceId);
+      const payload = await resolveStreamUri(stored.body, stored.dvrServerId);
+      await query('UPDATE devices SET status = $2, last_check_at = now() WHERE id = $1', [deviceId, 'online']);
+      return res.json(payload);
+    } catch (error) {
+      await query('UPDATE devices SET status = $2, last_check_at = now() WHERE id = $1', [deviceId, 'error']).catch(() => undefined);
+      throw error;
+    }
+  }
+
   if (cameraId) {
     const stored = await cameraStoredConnectBody(cameraId);
     return res.json(await resolveStreamUri(stored.body, stored.dvrServerId));
   }
 
-  // Backward-compatible manual mode for new cameras or explicit tests.
   const body = connectSchema.parse({
     ip: raw.ip || raw.host || cleanHostFromXaddr(raw.xaddr),
     port: raw.port || 80,
