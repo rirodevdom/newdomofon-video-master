@@ -29,6 +29,7 @@ import { nodeAgentRouter } from './routes/nodeAgent.js';
 import { devicesRouter } from './routes/devices.js';
 import { dashboardRouter } from './routes/dashboard.js';
 import { tokensRouter } from './routes/tokens.js';
+import { managedCameraTokensRouter } from './routes/managedCameraTokens.js';
 import { smartYardLinksRouter } from './routes/smartyardLinks.js';
 import { internalSmartYardRouter } from './routes/internalSmartYard.js';
 
@@ -73,6 +74,9 @@ app.use('/api/users', usersRouter);
 app.use('/api/dvr-servers', dvrServersRouter);
 app.use('/api/devices', devicesRouter);
 app.use('/api/dashboard', dashboardRouter);
+// Managed token routes are mounted first so camera links require an explicitly
+// selected reusable token instead of minting an ad-hoc token on every click.
+app.use('/api/tokens', managedCameraTokensRouter);
 app.use('/api/tokens/smartyard-links', smartYardLinksRouter);
 app.use('/api/tokens', tokensRouter);
 app.use('/api/camera-groups', cameraGroupsRouter);
