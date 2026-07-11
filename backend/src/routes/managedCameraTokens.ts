@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { Router } from 'express';
 import { z } from 'zod';
-import { pool, query } from '../db.js';
+import { query } from '../db.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { signManagedCameraToken } from '../services/managedCameraToken.js';
 import type { AuthRequest } from '../types.js';
@@ -235,14 +235,15 @@ const openCameraLinks = asyncHandler(async (req, res) => {
   }
 
   const cameraResult = await query<CameraLinkRow>(
-    `SELECT c.id, c.name, c.stream_name, c.archive_storage,
-            d.archive_storage AS device_archive_storage,
-            ds.name AS node_name,
-            ds.is_enabled AS node_enabled,
-            (ds.media_secret IS NOT NULL AND length(ds.media_secret) > 0) AS node_media_secret_configured
+    `SELECT c.id, c.name, c.stream_name,
+            device.archive_storage,
+            device.archive_storage AS device_archive_storage,
+            node.name AS node_name,
+            node.is_enabled AS node_enabled,
+            (node.media_secret IS NOT NULL AND length(node.media_secret) > 0) AS node_media_secret_configured
        FROM cameras c
-       LEFT JOIN devices d ON d.id = c.device_id
-       LEFT JOIN dvr_servers ds ON ds.id = c.dvr_server_id
+       JOIN devices device ON device.id = c.device_id
+       LEFT JOIN dvr_servers node ON node.id = device.dvr_server_id
       WHERE c.id = $1
         AND c.is_enabled = true
       LIMIT 1`,
@@ -257,44 +258,21 @@ const openCameraLinks = asyncHandler(async (req, res) => {
   const origin = publicOrigin(authReq);
   if (!origin) return res.status(500).json({ error: 'Публичный адрес видеосервера не определён' });
 
-  const client = await pool.connect();
-  let previousManagedTokenId: string | null = null;
-  try {
-    await client.query('BEGIN');
-    const previous = await client.query<{ token_id: string }>(
-      `SELECT token_id
-         FROM managed_camera_token_cameras
-        WHERE camera_id = $1
-        FOR UPDATE`,
-      [camera.id]
-    );
-    previousManagedTokenId = previous.rows[0]?.token_id || null;
-
-    await client.query(
-      `INSERT INTO managed_camera_token_cameras(token_id, camera_id, created_by, created_at)
-       VALUES ($1,$2,$3,now())
-       ON CONFLICT (camera_id) DO UPDATE
-         SET token_id = EXCLUDED.token_id,
-             created_by = EXCLUDED.created_by,
-             created_at = now()`,
-      [token.id, camera.id, authReq.user.id]
-    );
-    await client.query('COMMIT');
-  } catch (error) {
-    await client.query('ROLLBACK').catch(() => undefined);
-    throw error;
-  } finally {
-    client.release();
-  }
+  const assignment = await query(
+    `INSERT INTO managed_camera_token_cameras(token_id, camera_id, created_by, created_at)
+     VALUES ($1,$2,$3,now())
+     ON CONFLICT (token_id, camera_id) DO NOTHING
+     RETURNING token_id`,
+    [token.id, camera.id, authReq.user.id]
+  );
+  const assignmentAdded = Boolean(assignment.rowCount);
 
   const rawToken = signManagedCameraToken(token.id, Number(token.generation));
   const encodedToken = encodeURIComponent(rawToken);
   const stream = encodeURIComponent(camera.stream_name);
   const base = `${origin}/${stream}`;
   const cameraUrl = `${base}/?token=${encodedToken}`;
-  const effectiveArchive = camera.device_archive_storage === 'both'
-    ? 'both'
-    : (camera.archive_storage || camera.device_archive_storage || 'node');
+  const effectiveArchive = camera.device_archive_storage || camera.archive_storage || 'node';
 
   res.json({
     camera: { id: camera.id, name: camera.name, stream_name: camera.stream_name },
@@ -305,8 +283,7 @@ const openCameraLinks = asyncHandler(async (req, res) => {
       expires_at: token.expires_at,
       generation: token.generation
     },
-    assignment_changed: previousManagedTokenId !== token.id,
-    previous_managed_token_id: previousManagedTokenId,
+    assignment_added: assignmentAdded,
     mode: 'managed-token',
     node_name: camera.node_name,
     camera_token: rawToken,
@@ -323,9 +300,9 @@ const openCameraLinks = asyncHandler(async (req, res) => {
     archive_source: effectiveArchive,
     expires_at: token.expires_at,
     permanent: token.expires_at === null,
-    note: previousManagedTokenId && previousManagedTokenId !== token.id
-      ? 'Камера перепривязана к выбранному управляемому токену.'
-      : 'Ссылка использует текущий управляемый токен; новый токен не создавался.'
+    note: assignmentAdded
+      ? 'Токен дополнительно привязан к камере; остальные привязки сохранены.'
+      : 'Ссылка использует уже привязанный к камере токен.'
   });
 });
 
