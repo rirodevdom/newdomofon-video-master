@@ -53,6 +53,15 @@ type CameraLinkRow = {
   node_media_secret_configured: boolean;
 };
 
+type FormatLink = {
+  type: 'HLS' | 'MPEG-TS' | 'DASH' | 'RTSP' | 'JPEG';
+  protocol: string;
+  available: boolean;
+  url: string | null;
+  content_type: string | null;
+  note?: string;
+};
+
 function parseExpiresAt(value: string | null | undefined): Date | null {
   if (value === undefined || value === null || value === '') return null;
   const parsed = new Date(value);
@@ -109,6 +118,83 @@ async function ensureUniqueName(name: string, excludedId?: string) {
     error.status = 409;
     throw error;
   }
+}
+
+function fillRtspTemplate(template: string, streamName: string, rawToken: string): string {
+  return template
+    .replaceAll('{stream}', encodeURIComponent(streamName))
+    .replaceAll('{token}', encodeURIComponent(rawToken));
+}
+
+function rtspFormatLink(streamName: string, rawToken: string): FormatLink {
+  const template = String(process.env.RTSP_PUBLIC_URL_TEMPLATE || '').trim();
+  if (template) {
+    const url = fillRtspTemplate(template, streamName, rawToken);
+    if (/^rtsps?:\/\//i.test(url)) {
+      return {
+        type: 'RTSP',
+        protocol: url.toLowerCase().startsWith('rtsps://') ? 'RTSPS' : 'RTSP',
+        available: true,
+        url,
+        content_type: 'application/x-rtsp'
+      };
+    }
+  }
+
+  const base = String(process.env.RTSP_PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
+  if (base && /^rtsps?:\/\//i.test(base)) {
+    return {
+      type: 'RTSP',
+      protocol: base.toLowerCase().startsWith('rtsps://') ? 'RTSPS' : 'RTSP',
+      available: true,
+      url: `${base}/${encodeURIComponent(streamName)}?token=${encodeURIComponent(rawToken)}`,
+      content_type: 'application/x-rtsp'
+    };
+  }
+
+  return {
+    type: 'RTSP',
+    protocol: 'RTSP',
+    available: false,
+    url: null,
+    content_type: null,
+    note: 'RTSP gateway не настроен. Задайте RTSP_PUBLIC_URL_TEMPLATE с плейсхолдерами {stream} и {token}.'
+  };
+}
+
+function buildFormatLinks(base: string, streamName: string, rawToken: string): FormatLink[] {
+  const encodedToken = encodeURIComponent(rawToken);
+  return [
+    {
+      type: 'HLS',
+      protocol: 'HTTPS',
+      available: true,
+      url: `${base}/index.m3u8?token=${encodedToken}`,
+      content_type: 'application/vnd.apple.mpegurl'
+    },
+    {
+      type: 'MPEG-TS',
+      protocol: 'HTTPS',
+      available: true,
+      url: `${base}/live.ts?token=${encodedToken}`,
+      content_type: 'video/mp2t'
+    },
+    {
+      type: 'DASH',
+      protocol: 'HTTPS',
+      available: true,
+      url: `${base}/live.mpd?token=${encodedToken}`,
+      content_type: 'application/dash+xml'
+    },
+    rtspFormatLink(streamName, rawToken),
+    {
+      type: 'JPEG',
+      protocol: 'HTTPS',
+      available: true,
+      url: `${base}/snapshot.jpg?token=${encodedToken}`,
+      content_type: 'image/jpeg'
+    }
+  ];
 }
 
 managedCameraTokensRouter.get('/managed-camera-tokens', asyncHandler(async (_req, res) => {
@@ -273,6 +359,7 @@ const openCameraLinks = asyncHandler(async (req, res) => {
   const base = `${origin}/${stream}`;
   const cameraUrl = `${base}/?token=${encodedToken}`;
   const effectiveArchive = camera.device_archive_storage || camera.archive_storage || 'node';
+  const formatLinks = buildFormatLinks(base, camera.stream_name, rawToken);
 
   res.json({
     camera: { id: camera.id, name: camera.name, stream_name: camera.stream_name },
@@ -294,7 +381,12 @@ const openCameraLinks = asyncHandler(async (req, res) => {
     camera_url: cameraUrl,
     player_url: cameraUrl,
     primary_url: cameraUrl,
-    live_url: `${base}/index.m3u8?token=${encodedToken}`,
+    live_url: formatLinks.find((item) => item.type === 'HLS')?.url,
+    mpeg_ts_url: formatLinks.find((item) => item.type === 'MPEG-TS')?.url,
+    dash_url: formatLinks.find((item) => item.type === 'DASH')?.url,
+    rtsp_url: formatLinks.find((item) => item.type === 'RTSP')?.url,
+    jpeg_url: formatLinks.find((item) => item.type === 'JPEG')?.url,
+    format_links: formatLinks,
     archive_url_template: `${base}/archive.m3u8?start=<ISO_START>&end=<ISO_END>&token=${encodedToken}`,
     events_url_template: `${base}/events.json?start=<ISO_START>&end=<ISO_END>&token=${encodedToken}`,
     archive_source: effectiveArchive,
