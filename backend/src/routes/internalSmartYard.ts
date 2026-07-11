@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { Router } from 'express';
 import { z } from 'zod';
 import { query } from '../db.js';
+import { verifyManagedCameraToken } from '../services/managedCameraToken.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 
 export const internalSmartYardRouter = Router();
@@ -28,6 +29,16 @@ type CameraNodeRow = {
   node_base_url: string | null;
   node_public_url: string | null;
   node_media_secret: string;
+};
+
+type ManagedCameraNodeRow = CameraNodeRow & {
+  managed_token_id: string;
+  managed_token_name: string;
+  managed_token_generation: number;
+  managed_token_scopes: string[];
+  managed_token_active: boolean;
+  managed_token_expires_at: string | null;
+  managed_token_created_by: string | null;
 };
 
 function requireInternal(req: any, res: any, next: any) {
@@ -82,10 +93,129 @@ function signUpstreamToken(secret: string, payload: Record<string, unknown>): st
   return `${body}.${signature}`;
 }
 
+function nodeUrl(camera: CameraNodeRow): string {
+  return String(camera.node_internal_url || camera.node_base_url || camera.node_public_url || '').replace(/\/+$/, '');
+}
+
+function upstreamTtlSeconds(): number {
+  const ttlRaw = Number(process.env.SMARTYARD_UPSTREAM_TOKEN_TTL_SECONDS || 300);
+  return Number.isFinite(ttlRaw) ? Math.max(30, Math.min(900, Math.floor(ttlRaw))) : 300;
+}
+
+function sendResolved(
+  res: any,
+  camera: CameraNodeRow,
+  upstreamScope: 'camera' | 'events',
+  userId: string,
+  tokenSource: 'managed' | 'node' | 'legacy',
+  managedToken?: { id: string; name: string }
+) {
+  const resolvedNodeUrl = nodeUrl(camera);
+  if (!resolvedNodeUrl) return res.status(409).json({ error: 'Assigned node URL is not configured' });
+
+  const ttlSeconds = upstreamTtlSeconds();
+  const now = Math.floor(Date.now() / 1000);
+  const upstreamToken = signUpstreamToken(camera.node_media_secret, {
+    camera_id: camera.camera_id,
+    stream_name: camera.stream_name,
+    user_id: userId,
+    scope: upstreamScope,
+    iat: now,
+    exp: now + ttlSeconds
+  });
+
+  res.setHeader('cache-control', 'no-store');
+  return res.json({
+    ok: true,
+    camera: {
+      id: camera.camera_id,
+      name: camera.camera_name,
+      stream_name: camera.stream_name
+    },
+    node: {
+      id: camera.node_id,
+      name: camera.node_name,
+      url: resolvedNodeUrl
+    },
+    upstream_token: upstreamToken,
+    upstream_scope: upstreamScope,
+    expires_in: ttlSeconds,
+    token_source: tokenSource,
+    managed_token: managedToken || undefined
+  });
+}
+
 internalSmartYardRouter.use(requireInternal);
 
 internalSmartYardRouter.post('/resolve', asyncHandler(async (req, res) => {
   const body = resolveSchema.parse(req.body || {});
+
+  // Managed tokens are master-owned, reusable and explicitly assigned to cameras.
+  // They never reach a node directly: master resolves them and mints a short-lived
+  // node token for each request.
+  const managedPayload = verifyManagedCameraToken(body.token);
+  if (managedPayload) {
+    const streamResult = streamNameSchema.safeParse(String(body.stream_name || '').trim());
+    if (!streamResult.success) return res.status(400).json({ error: 'stream_name is required for managed tokens' });
+
+    const result = await query<ManagedCameraNodeRow>(
+      `SELECT t.id AS managed_token_id,
+              t.name AS managed_token_name,
+              t.generation AS managed_token_generation,
+              t.scopes AS managed_token_scopes,
+              t.is_active AS managed_token_active,
+              t.expires_at AS managed_token_expires_at,
+              t.created_by AS managed_token_created_by,
+              c.id AS camera_id,
+              c.name AS camera_name,
+              c.stream_name,
+              c.is_enabled AS camera_enabled,
+              ds.id AS node_id,
+              ds.name AS node_name,
+              ds.is_enabled AS node_enabled,
+              ds.internal_url AS node_internal_url,
+              ds.base_url AS node_base_url,
+              ds.public_base_url AS node_public_url,
+              ds.media_secret AS node_media_secret
+         FROM managed_camera_tokens t
+         JOIN managed_camera_token_cameras mtc ON mtc.token_id = t.id
+         JOIN cameras c ON c.id = mtc.camera_id
+         JOIN dvr_servers ds ON ds.id = c.dvr_server_id
+        WHERE t.id = $1
+          AND t.generation = $2
+          AND c.stream_name = $3
+        LIMIT 1`,
+      [managedPayload.token_id, managedPayload.generation, streamResult.data]
+    );
+
+    const camera = result.rows[0];
+    if (!camera) return res.status(403).json({ error: 'Token is not assigned to this camera' });
+    if (!camera.managed_token_active) return res.status(401).json({ error: 'Managed token is disabled' });
+    if (camera.managed_token_expires_at && new Date(camera.managed_token_expires_at).getTime() <= Date.now()) {
+      return res.status(401).json({ error: 'Managed token expired' });
+    }
+    if (!camera.camera_enabled || !camera.node_enabled || !camera.node_media_secret) {
+      return res.status(404).json({ error: 'Camera or assigned node is unavailable' });
+    }
+
+    const requiredScope = body.upstream_scope === 'events' ? 'events' : 'camera';
+    if (!Array.isArray(camera.managed_token_scopes) || !camera.managed_token_scopes.includes(requiredScope)) {
+      return res.status(403).json({ error: `Managed token does not allow ${requiredScope}` });
+    }
+
+    await query('UPDATE managed_camera_tokens SET last_used_at = now() WHERE id = $1', [camera.managed_token_id]);
+
+    return sendResolved(
+      res,
+      camera,
+      body.upstream_scope,
+      camera.managed_token_created_by || `managed:${camera.managed_token_id}`,
+      'managed',
+      { id: camera.managed_token_id, name: camera.managed_token_name }
+    );
+  }
+
+  // Compatibility path for already-issued camera tokens.
   const parsed = parseToken(body.token);
   if (!parsed) return res.status(401).json({ error: 'Invalid playback token' });
 
@@ -143,41 +273,11 @@ internalSmartYardRouter.post('/resolve', asyncHandler(async (req, res) => {
 
   if (!tokenSource) return res.status(401).json({ error: 'Invalid playback token signature' });
 
-  const nodeUrl = String(
-    camera.node_internal_url || camera.node_base_url || camera.node_public_url || ''
-  ).replace(/\/+$/, '');
-
-  if (!nodeUrl) return res.status(409).json({ error: 'Assigned node URL is not configured' });
-
-  const ttlRaw = Number(process.env.SMARTYARD_UPSTREAM_TOKEN_TTL_SECONDS || 300);
-  const ttlSeconds = Number.isFinite(ttlRaw) ? Math.max(30, Math.min(900, Math.floor(ttlRaw))) : 300;
-  const now = Math.floor(Date.now() / 1000);
-
-  const upstreamToken = signUpstreamToken(camera.node_media_secret, {
-    camera_id: camera.camera_id,
-    stream_name: camera.stream_name,
-    user_id: String(parsed.payload.user_id || 'smartyard-compat'),
-    scope: body.upstream_scope,
-    iat: now,
-    exp: now + ttlSeconds
-  });
-
-  res.setHeader('cache-control', 'no-store');
-  res.json({
-    ok: true,
-    camera: {
-      id: camera.camera_id,
-      name: camera.camera_name,
-      stream_name: camera.stream_name
-    },
-    node: {
-      id: camera.node_id,
-      name: camera.node_name,
-      url: nodeUrl
-    },
-    upstream_token: upstreamToken,
-    upstream_scope: body.upstream_scope,
-    expires_in: ttlSeconds,
-    token_source: tokenSource
-  });
+  return sendResolved(
+    res,
+    camera,
+    body.upstream_scope,
+    String(parsed.payload.user_id || 'smartyard-compat'),
+    tokenSource
+  );
 }));
