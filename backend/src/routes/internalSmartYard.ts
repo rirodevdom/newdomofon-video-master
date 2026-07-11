@@ -203,7 +203,15 @@ internalSmartYardRouter.post('/resolve', asyncHandler(async (req, res) => {
       return res.status(403).json({ error: `Managed token does not allow ${requiredScope}` });
     }
 
-    await query('UPDATE managed_camera_tokens SET last_used_at = now() WHERE id = $1', [camera.managed_token_id]);
+    // HLS segment requests resolve frequently. Touch usage at most once per five
+    // minutes and never make media availability depend on this diagnostic write.
+    await query(
+      `UPDATE managed_camera_tokens
+          SET last_used_at = now()
+        WHERE id = $1
+          AND (last_used_at IS NULL OR last_used_at < now() - interval '5 minutes')`,
+      [camera.managed_token_id]
+    ).catch(() => undefined);
 
     return sendResolved(
       res,
