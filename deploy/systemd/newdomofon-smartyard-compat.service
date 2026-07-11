@@ -1,5 +1,5 @@
 [Unit]
-Description=NewDomofon SmartYard Media, Event and Preview Gateway
+Description=NewDomofon SmartYard Media, Format, Event and Preview Gateway
 Documentation=file:/opt/newdomofon-video-master/README.md
 After=network-online.target newdomofon-video-backend.service
 Wants=network-online.target newdomofon-video-backend.service
@@ -15,6 +15,7 @@ Environment=SMARTYARD_COMPAT_PORT=3082
 Environment=SMARTYARD_LEGACY_PORT=3083
 Environment=SMARTYARD_MEDIA_GATEWAY_PORT=3084
 Environment=SMARTYARD_EVENTS_GATEWAY_PORT=3085
+Environment=SMARTYARD_PREVIEW_GATEWAY_PORT=3086
 Environment=SMARTYARD_BACKEND_URL=http://127.0.0.1:3000
 Environment=DVR_ENGINE_URL=http://127.0.0.1:3010
 Environment=PREVIEW_CACHE_DIR=/var/cache/newdomofon-video/smartyard-preview
@@ -22,7 +23,7 @@ Environment=PREVIEW_CACHE_TTL_MS=15000
 Environment=PREVIEW_ARCHIVE_CACHE_TTL_MS=3600000
 Environment=PREVIEW_DURATION_SECONDS=3
 Environment=PREVIEW_EXPORT_TIMEOUT_MS=60000
-ExecStart=/usr/bin/node /opt/newdomofon-video-master/smartyard-compat-proxy/server-preview-gateway.js
+ExecStart=/usr/bin/node /opt/newdomofon-video-master/smartyard-compat-proxy/server-formats-gateway.js
 Restart=always
 RestartSec=3
 TimeoutStopSec=20
