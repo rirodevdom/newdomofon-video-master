@@ -7,6 +7,13 @@ function errorCode(error: unknown): string {
   return String(candidate.code || candidate.errno || '');
 }
 
+function errorStatus(error: unknown): number | null {
+  if (!error || typeof error !== 'object') return null;
+  const candidate = error as { status?: unknown; statusCode?: unknown };
+  const value = Number(candidate.status || candidate.statusCode);
+  return Number.isInteger(value) && value >= 400 && value <= 599 ? value : null;
+}
+
 function isDiskFullError(error: unknown): boolean {
   const code = errorCode(error).toUpperCase();
   if (code === 'ENOSPC' || code === '53100') return true;
@@ -28,5 +35,5 @@ export function errorHandler(error: unknown, _req: Request, res: Response, _next
     });
   }
   const message = error instanceof Error ? error.message : 'Internal server error';
-  return res.status(500).json({ error: message });
+  return res.status(errorStatus(error) || 500).json({ error: message });
 }
