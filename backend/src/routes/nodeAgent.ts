@@ -155,19 +155,22 @@ nodeAgentRouter.post('/heartbeat', requireNode, asyncHandler(async (req: NodeAge
 
 nodeAgentRouter.get('/config', requireNode, asyncHandler(async (req: NodeAgentRequest, res) => {
   const cameras = await query(
-    `SELECT c.id, c.name, c.stream_name, c.source_url, c.archive_storage, c.rtmp_push_url, c.retention_days, c.is_enabled,
+    `SELECT c.id, c.name, c.stream_name, c.source_url,
+            device.archive_storage,
+            c.rtmp_push_url, c.retention_days, c.is_enabled,
             c.device_id,
-            d.connection_type AS device_connection_type,
-            d.archive_storage AS device_archive_storage,
-            d.host AS device_host,
-            d.port AS device_port,
-            d.username AS device_username,
-            d.password AS device_password,
-            d.rtsp_url AS device_rtsp_url,
+            device.connection_type AS device_connection_type,
+            device.archive_storage AS device_archive_storage,
+            device.host AS device_host,
+            device.port AS device_port,
+            device.username AS device_username,
+            device.password AS device_password,
+            device.rtsp_url AS device_rtsp_url,
             c.onvif_xaddr, c.onvif_port, c.onvif_username, c.onvif_password, c.onvif_profile_token
        FROM cameras c
-       LEFT JOIN devices d ON d.id = c.device_id
-      WHERE c.dvr_server_id = $1
+       JOIN devices device ON device.id = c.device_id
+      WHERE device.dvr_server_id = $1
+        AND device.is_enabled = true
         AND c.is_enabled = true
       ORDER BY c.stream_name ASC`,
     [req.node!.id]

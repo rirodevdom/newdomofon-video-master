@@ -14,10 +14,9 @@ const schema = z.object({
   base_url: z.string().min(1).optional(),
   public_base_url: z.string().min(1).optional(),
   internal_url: z.string().optional().nullable(),
-  status: z.string().optional(),
   is_enabled: z.boolean().optional(),
   capabilities: z.record(z.any()).optional()
-});
+}).strict();
 
 function createSecret(bytes = 32): string {
   return crypto.randomBytes(bytes).toString('base64url');
@@ -32,8 +31,11 @@ dvrServersRouter.get('/', asyncHandler(async (_req, res) => {
     `SELECT id, name, base_url, public_base_url, internal_url, status, last_seen_at,
             version, capabilities, storage, is_enabled, config_generation,
             created_at, updated_at,
-            EXISTS(SELECT 1 FROM cameras c WHERE c.dvr_server_id = dvr_servers.id) AS has_cameras,
-            (SELECT count(*)::int FROM cameras c WHERE c.dvr_server_id = dvr_servers.id) AS camera_count,
+            EXISTS(SELECT 1 FROM devices d WHERE d.dvr_server_id = dvr_servers.id) AS has_cameras,
+            (SELECT count(*)::int
+               FROM cameras c
+               JOIN devices d ON d.id = c.device_id
+              WHERE d.dvr_server_id = dvr_servers.id) AS camera_count,
             (SELECT count(*)::int FROM devices d WHERE d.dvr_server_id = dvr_servers.id) AS device_count
        FROM dvr_servers
       ORDER BY created_at DESC`
@@ -42,7 +44,7 @@ dvrServersRouter.get('/', asyncHandler(async (_req, res) => {
 }));
 
 dvrServersRouter.post('/', requireRole('super_admin', 'operator'), asyncHandler(async (req, res) => {
-  const body = schema.parse(req.body);
+  const body = schema.parse(req.body || {});
   const agentToken = createSecret();
   const mediaSecret = createSecret();
   const publicBaseUrl = body.public_base_url || body.base_url || '';
@@ -51,14 +53,13 @@ dvrServersRouter.post('/', requireRole('super_admin', 'operator'), asyncHandler(
        name, base_url, public_base_url, internal_url, status,
        agent_token_hash, media_secret, is_enabled, capabilities
      )
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+     VALUES ($1,$2,$3,$4,'unknown',$5,$6,$7,$8)
      RETURNING id`,
     [
       body.name,
       publicBaseUrl,
       publicBaseUrl,
       body.internal_url ?? null,
-      body.status ?? 'unknown',
       sha256(agentToken),
       mediaSecret,
       body.is_enabled ?? true,
@@ -75,19 +76,19 @@ dvrServersRouter.post('/', requireRole('super_admin', 'operator'), asyncHandler(
 }));
 
 dvrServersRouter.patch('/:id', requireRole('super_admin', 'operator'), asyncHandler(async (req, res) => {
-  const body = schema.partial().parse(req.body);
+  const body = schema.partial().parse(req.body || {});
   const normalized = {
     ...body,
     base_url: body.public_base_url || body.base_url,
     public_base_url: body.public_base_url || body.base_url
   };
-  const fields = Object.entries(normalized).filter(([, v]) => v !== undefined);
+  const fields = Object.entries(normalized).filter(([, value]) => value !== undefined);
   if (fields.length) {
-    const sets = fields.map(([key], idx) => `${key} = $${idx + 2}`).join(', ');
-    const values = fields.map(([key, v]) => key === 'capabilities' ? JSON.stringify(v) : v);
+    const sets = fields.map(([key], index) => `${key} = $${index + 2}`).join(', ');
+    const values = fields.map(([key, value]) => key === 'capabilities' ? JSON.stringify(value) : value);
     await query(`UPDATE dvr_servers SET ${sets}, config_generation = config_generation + 1 WHERE id = $1`, [req.params.id, ...values]);
   }
-  await audit(req, 'dvr_server.update', 'dvr_server', req.params.id);
+  await audit(req, 'dvr_server.update', 'dvr_server', req.params.id, { fields: fields.map(([key]) => key) });
   res.json({ ok: true });
 }));
 
@@ -108,17 +109,12 @@ dvrServersRouter.post('/:id/rotate-token', requireRole('super_admin'), asyncHand
   res.json({ node_id: req.params.id, agent_token: agentToken, media_secret: mediaSecret || undefined });
 }));
 
-dvrServersRouter.post('/:id/assign-cameras', requireRole('super_admin', 'operator'), asyncHandler(async (req, res) => {
-  const cameraIds = z.array(z.string().uuid()).parse(req.body?.camera_ids || req.body?.cameraIds || []);
-  await query('UPDATE cameras SET dvr_server_id = $1 WHERE id = ANY($2::uuid[])', [req.params.id, cameraIds]);
-  await query('UPDATE dvr_servers SET config_generation = config_generation + 1 WHERE id = $1', [req.params.id]);
-  await query(
-    `INSERT INTO node_commands(dvr_server_id, type, payload)
-     VALUES ($1, 'reload_cameras', $2)`,
-    [req.params.id, JSON.stringify({ camera_ids: cameraIds })]
-  );
-  await audit(req, 'dvr_server.assign_cameras', 'dvr_server', req.params.id, { camera_ids: cameraIds });
-  res.json({ ok: true, assigned: cameraIds.length });
+// Camera placement is owned by the parent device. Keep the old endpoint explicit
+// so older clients receive a useful error instead of silently creating divergence.
+dvrServersRouter.post('/:id/assign-cameras', requireRole('super_admin', 'operator'), asyncHandler(async (_req, res) => {
+  res.status(409).json({
+    error: 'Камеры наследуют video node от устройства. Измените node в настройках устройства.'
+  });
 }));
 
 dvrServersRouter.post('/:id/commands', requireRole('super_admin', 'operator'), asyncHandler(async (req, res) => {
@@ -135,7 +131,19 @@ dvrServersRouter.post('/:id/commands', requireRole('super_admin', 'operator'), a
 }));
 
 dvrServersRouter.delete('/:id', requireRole('super_admin'), asyncHandler(async (req, res) => {
-  await query('DELETE FROM dvr_servers WHERE id = $1', [req.params.id]);
+  const assigned = await query<{ id: string; name: string }>(
+    `SELECT id, name FROM devices WHERE dvr_server_id = $1 ORDER BY name LIMIT 20`,
+    [req.params.id]
+  );
+  if (assigned.rowCount) {
+    return res.status(409).json({
+      error: 'Сначала перенесите или удалите устройства, назначенные этой node.',
+      devices: assigned.rows
+    });
+  }
+
+  const result = await query('DELETE FROM dvr_servers WHERE id = $1 RETURNING id', [req.params.id]);
+  if (!result.rowCount) return res.status(404).json({ error: 'Node not found' });
   await audit(req, 'dvr_server.delete', 'dvr_server', req.params.id);
   res.json({ ok: true });
 }));
