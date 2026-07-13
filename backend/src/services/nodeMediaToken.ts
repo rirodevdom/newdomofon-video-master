@@ -51,3 +51,20 @@ export function signNodeMediaToken(secret: string, payload: Omit<NodeMediaTokenP
   cleanPayload.exp = Math.floor(Date.now() / 1000) + ttlSeconds;
   return signPayload(secret, cleanPayload);
 }
+
+/**
+ * Sign a token that always contains exp even when permanent public links are
+ * enabled. Internal RTSP relay source URLs only need enough time to establish a
+ * single continuous MPEG-TS connection to the assigned node.
+ */
+export function signEphemeralNodeMediaToken(
+  secret: string,
+  payload: Omit<NodeMediaTokenPayload, 'exp'>,
+  ttlSeconds = 600
+): string {
+  const cleanPayload: NodeMediaTokenPayload = {
+    ...payload,
+    exp: Math.floor(Date.now() / 1000) + Math.max(30, Math.min(3600, Math.floor(ttlSeconds)))
+  };
+  return signPayload(secret, cleanPayload);
+}
