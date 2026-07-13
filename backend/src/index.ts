@@ -32,6 +32,7 @@ import { tokensRouter } from './routes/tokens.js';
 import { managedCameraTokensRouter } from './routes/managedCameraTokens.js';
 import { smartYardLinksRouter } from './routes/smartyardLinks.js';
 import { internalSmartYardRouter } from './routes/internalSmartYard.js';
+import { internalRtspRouter } from './routes/internalRtsp.js';
 
 const app = express();
 
@@ -63,6 +64,9 @@ app.get('/api/health', (_req, res) => {
 // Internal SmartYard resolver validates a public camera link against the
 // media_secret of the camera's assigned node and never exposes that secret.
 app.use('/api/internal/smartyard', internalSmartYardRouter);
+// MediaMTX calls these loopback-only endpoints for RTSP auth and on-demand
+// source resolution. A generated shared secret is required on every request.
+app.use('/api/internal/rtsp', internalRtspRouter);
 
 // The explicit 410 event-ingest routes must be mounted before legacy internal
 // helpers so master can never persist camera event payloads again.
