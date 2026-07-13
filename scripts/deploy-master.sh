@@ -5,6 +5,7 @@ PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video-master}"
 ENV_FILE="${ENV_FILE:-/etc/newdomofon-video/app.env}"
 INSTALL_DISK_GUARD="${INSTALL_DISK_GUARD:-1}"
 INSTALL_JOURNAL_LIMITS="${INSTALL_JOURNAL_LIMITS:-1}"
+INSTALL_RTSP_GATEWAY="${INSTALL_RTSP_GATEWAY:-1}"
 
 if [[ "$(id -u)" -ne 0 ]]; then
   echo "Run as root: sudo PROJECT_DIR=$PROJECT_DIR bash scripts/deploy-master.sh" >&2
@@ -80,6 +81,11 @@ if [[ -f /etc/systemd/system/newdomofon-smartyard-compat.service ]]; then
   systemctl restart newdomofon-smartyard-compat
 fi
 
+if [[ "$INSTALL_RTSP_GATEWAY" =~ ^(1|true|yes|on)$ ]]; then
+  PROJECT_DIR="$PROJECT_DIR" ENV_FILE="$ENV_FILE" \
+    bash "$PROJECT_DIR/scripts/install-rtsp-gateway.sh"
+fi
+
 if [[ "$INSTALL_DISK_GUARD" =~ ^(1|true|yes|on)$ ]]; then
   PROJECT_DIR="$PROJECT_DIR" INSTALL_JOURNAL_LIMITS="$INSTALL_JOURNAL_LIMITS" \
     bash "$PROJECT_DIR/scripts/install-master-disk-guard.sh"
@@ -98,4 +104,7 @@ systemctl reload nginx
 echo "Master deployed. DVR service is disabled on strict master deployments."
 if [[ "$INSTALL_DISK_GUARD" =~ ^(1|true|yes|on)$ ]]; then
   echo "Disk guard: cat /run/newdomofon-video/master-disk-state.json"
+fi
+if [[ "$INSTALL_RTSP_GATEWAY" =~ ^(1|true|yes|on)$ ]]; then
+  echo "RTSP gateway: systemctl status newdomofon-video-rtsp-gateway.service"
 fi
