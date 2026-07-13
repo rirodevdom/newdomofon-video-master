@@ -1,0 +1,38 @@
+[Unit]
+Description=NewDomofon Video RTSP Gateway (MediaMTX)
+Documentation=file:/opt/newdomofon-video-master/README.md
+After=network-online.target newdomofon-video-backend.service
+Wants=network-online.target newdomofon-video-backend.service
+
+[Service]
+Type=simple
+User=newdomofon
+Group=newdomofon
+EnvironmentFile=/etc/newdomofon-video/app.env
+ExecStartPre=/usr/bin/test -x /usr/local/bin/mediamtx
+ExecStartPre=/usr/bin/test -r /etc/newdomofon-video/mediamtx.yml
+ExecStartPre=/usr/bin/test -x /usr/local/lib/newdomofon-video/rtsp-relay-on-demand.sh
+ExecStart=/usr/local/bin/mediamtx /etc/newdomofon-video/mediamtx.yml
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+KillSignal=SIGINT
+KillMode=control-group
+SyslogIdentifier=newdomofon-video-rtsp
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+ReadWritePaths=/run/newdomofon-video /var/log/newdomofon-video /tmp
+RuntimeDirectory=newdomofon-video
+LogsDirectory=newdomofon-video
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
