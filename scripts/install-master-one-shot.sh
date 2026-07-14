@@ -57,4 +57,4 @@ else
   SCRIPT_ROOT="$BOOTSTRAP_DIR/repo"
 fi
 
-exec bash "$SCRIPT_ROOT/scripts/lib/master-one-shot-install.sh"
+bash "$SCRIPT_ROOT/scripts/lib/master-one-shot-install.sh"
