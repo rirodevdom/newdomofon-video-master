@@ -10,6 +10,9 @@ BINARY="/usr/local/bin/mediamtx"
 RELAY_SCRIPT="/usr/local/lib/newdomofon-video/rtsp-relay-on-demand.sh"
 UNIT_FILE="/etc/systemd/system/$SERVICE"
 VERSION_FILE="/usr/local/share/newdomofon-video/mediamtx-version"
+MEDIAMTX_CACHE_DIR="${MEDIAMTX_CACHE_DIR:-/var/cache/newdomofon-video/install}"
+MEDIAMTX_ARCHIVE="${MEDIAMTX_ARCHIVE:-}"
+BACKEND_HEALTH_TIMEOUT_SECONDS="${BACKEND_HEALTH_TIMEOUT_SECONDS:-60}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP="/opt/newdomofon-video-migration-backups/rtsp-gateway-$STAMP"
 
@@ -31,6 +34,7 @@ done
 }
 
 install -d -m 0750 "$BACKUP"
+install -d -o root -g newdomofon -m 0750 "$MEDIAMTX_CACHE_DIR"
 
 backup_one() {
   local path="$1"
@@ -77,6 +81,7 @@ rollback() {
   systemctl restart "$BACKEND_SERVICE" 2>/dev/null || true
   if [[ -f "$UNIT_FILE" ]]; then systemctl restart "$SERVICE" 2>/dev/null || true; fi
   echo "Backup: $BACKUP" >&2
+  echo "MediaMTX cache preserved: $MEDIAMTX_CACHE_DIR" >&2
   exit "$rc"
 }
 trap rollback ERR
@@ -100,6 +105,26 @@ random_secret() {
   openssl rand -hex 32
 }
 
+wait_for_backend() {
+  local waited=0
+  while (( waited < BACKEND_HEALTH_TIMEOUT_SECONDS )); do
+    if curl -fsS --max-time 3 http://127.0.0.1:3000/api/health \
+      >/tmp/newdomofon-rtsp-backend-health.json 2>/dev/null; then
+      if jq -e '.ok == true' /tmp/newdomofon-rtsp-backend-health.json >/dev/null 2>&1; then
+        echo "Backend health check passed after ${waited}s"
+        return 0
+      fi
+    fi
+    sleep 1
+    ((waited += 1))
+  done
+
+  echo "Backend did not become healthy within ${BACKEND_HEALTH_TIMEOUT_SECONDS}s" >&2
+  systemctl --no-pager --full status "$BACKEND_SERVICE" >&2 || true
+  journalctl -u "$BACKEND_SERVICE" -n 300 --no-pager >&2 || true
+  return 1
+}
+
 GATEWAY_SECRET="$(get_env RTSP_GATEWAY_SHARED_SECRET)"
 PUBLISH_SECRET="$(get_env RTSP_RELAY_PUBLISH_SECRET)"
 [[ ${#GATEWAY_SECRET} -ge 32 ]] || GATEWAY_SECRET="$(random_secret)"
@@ -112,7 +137,6 @@ if [[ ! "$RTSP_PORT_VALUE" =~ ^[0-9]+$ ]] || (( RTSP_PORT_VALUE < 1024 || RTSP_P
   exit 64
 fi
 
-# Derive the public RTSP host from the already configured public HTTPS origin.
 PUBLIC_HOST="${RTSP_PUBLIC_HOST:-$(get_env RTSP_PUBLIC_HOST)}"
 if [[ -z "$PUBLIC_HOST" ]]; then
   PUBLIC_HOST="$(python3 - "$ENV_FILE" <<'PY'
@@ -172,58 +196,126 @@ esac
 REQUESTED_VERSION="${MEDIAMTX_VERSION:-$(get_env RTSP_MEDIAMTX_VERSION)}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+TAG=""
+ASSET=""
+USE_EXISTING_BINARY=false
 
-if [[ -n "$REQUESTED_VERSION" ]]; then
-  RELEASE_API="https://api.github.com/repos/bluenviron/mediamtx/releases/tags/${REQUESTED_VERSION}"
-else
-  RELEASE_API="https://api.github.com/repos/bluenviron/mediamtx/releases/latest"
-fi
-
-curl -fsSL --retry 3 --connect-timeout 15 \
-  -H 'accept: application/vnd.github+json' \
-  -H 'user-agent: newdomofon-video-rtsp-installer' \
-  "$RELEASE_API" >"$TMP/release.json"
-
-TAG="$(jq -er '.tag_name' "$TMP/release.json")"
-ASSET="mediamtx_${TAG}_linux_${ASSET_ARCH}.tar.gz"
-ASSET_URL="$(jq -er --arg name "$ASSET" '.assets[] | select(.name == $name) | .browser_download_url' "$TMP/release.json")"
-ASSET_DIGEST="$(jq -r --arg name "$ASSET" '.assets[] | select(.name == $name) | (.digest // empty)' "$TMP/release.json")"
-
-curl -fL --retry 3 --connect-timeout 15 "$ASSET_URL" -o "$TMP/$ASSET"
-
-EXPECTED_SHA=""
-if [[ "$ASSET_DIGEST" == sha256:* ]]; then
-  EXPECTED_SHA="${ASSET_DIGEST#sha256:}"
-else
-  CHECKSUM_URL="$(jq -r '.assets[] | select(.name | test("(?i)(checksums|sha256)")) | .browser_download_url' "$TMP/release.json" | head -1)"
-  if [[ -n "$CHECKSUM_URL" && "$CHECKSUM_URL" != null ]]; then
-    curl -fL --retry 3 --connect-timeout 15 "$CHECKSUM_URL" -o "$TMP/checksums.txt"
-    EXPECTED_SHA="$(awk -v name="$ASSET" '$2 == name || $2 == "*" name {print $1; exit}' "$TMP/checksums.txt")"
+if [[ -x "$BINARY" && -s "$VERSION_FILE" && -z "$MEDIAMTX_ARCHIVE" ]]; then
+  INSTALLED_VERSION="$(tr -d '[:space:]' <"$VERSION_FILE")"
+  if [[ -z "$REQUESTED_VERSION" || "$REQUESTED_VERSION" == "$INSTALLED_VERSION" ]]; then
+    TAG="$INSTALLED_VERSION"
+    USE_EXISTING_BINARY=true
+    echo "Using already installed MediaMTX: $TAG"
   fi
 fi
 
-if [[ -z "$EXPECTED_SHA" ]]; then
-  if [[ ! "${RTSP_ALLOW_UNVERIFIED_MEDIAMTX:-false}" =~ ^(1|true|yes|on)$ ]]; then
-    echo "MediaMTX release does not expose a SHA256 digest for $ASSET" >&2
-    exit 74
+if [[ "$USE_EXISTING_BINARY" != true ]]; then
+  if [[ -z "$MEDIAMTX_ARCHIVE" ]]; then
+    if [[ -n "$REQUESTED_VERSION" ]]; then
+      CACHED="$MEDIAMTX_CACHE_DIR/mediamtx_${REQUESTED_VERSION}_linux_${ASSET_ARCH}.tar.gz"
+      [[ -f "$CACHED" ]] && MEDIAMTX_ARCHIVE="$CACHED"
+    else
+      MEDIAMTX_ARCHIVE="$(find /root "$PROJECT_DIR/vendor" "$MEDIAMTX_CACHE_DIR" \
+        -maxdepth 2 -type f -name "mediamtx_*_linux_${ASSET_ARCH}.tar.gz" \
+        -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-)"
+    fi
   fi
-  echo "WARNING: installing MediaMTX without checksum verification" >&2
-else
-  ACTUAL_SHA="$(sha256sum "$TMP/$ASSET" | awk '{print $1}')"
-  [[ "$ACTUAL_SHA" == "$EXPECTED_SHA" ]] || {
-    echo "MediaMTX SHA256 mismatch" >&2
+
+  if [[ -n "$MEDIAMTX_ARCHIVE" ]]; then
+    [[ -f "$MEDIAMTX_ARCHIVE" ]] || {
+      echo "MediaMTX archive not found: $MEDIAMTX_ARCHIVE" >&2
+      exit 66
+    }
+    ASSET="$(basename "$MEDIAMTX_ARCHIVE")"
+    TAG="${ASSET#mediamtx_}"
+    TAG="${TAG%_linux_${ASSET_ARCH}.tar.gz}"
+    [[ -n "$TAG" && "$TAG" != "$ASSET" ]] || {
+      echo "Unexpected MediaMTX archive name: $ASSET" >&2
+      exit 64
+    }
+    cp -a "$MEDIAMTX_ARCHIVE" "$TMP/$ASSET"
+    echo "Using local MediaMTX archive: $MEDIAMTX_ARCHIVE"
+
+    CHECKSUM_FILE="${MEDIAMTX_ARCHIVE}.sha256"
+    if [[ -f "$CHECKSUM_FILE" ]]; then
+      EXPECTED_SHA="$(awk '{print $1; exit}' "$CHECKSUM_FILE")"
+      ACTUAL_SHA="$(sha256sum "$TMP/$ASSET" | awk '{print $1}')"
+      [[ "$ACTUAL_SHA" == "$EXPECTED_SHA" ]] || {
+        echo "Local MediaMTX SHA256 mismatch" >&2
+        exit 74
+      }
+    else
+      echo "Local MediaMTX SHA256: $(sha256sum "$TMP/$ASSET" | awk '{print $1}')"
+    fi
+  else
+    if [[ -n "$REQUESTED_VERSION" ]]; then
+      RELEASE_API="https://api.github.com/repos/bluenviron/mediamtx/releases/tags/${REQUESTED_VERSION}"
+    else
+      RELEASE_API="https://api.github.com/repos/bluenviron/mediamtx/releases/latest"
+    fi
+
+    curl -fsSL --retry 8 --retry-all-errors --connect-timeout 20 \
+      -H 'accept: application/vnd.github+json' \
+      -H 'user-agent: newdomofon-video-rtsp-installer' \
+      "$RELEASE_API" >"$TMP/release.json"
+
+    TAG="$(jq -er '.tag_name' "$TMP/release.json")"
+    ASSET="mediamtx_${TAG}_linux_${ASSET_ARCH}.tar.gz"
+    ASSET_URL="$(jq -er --arg name "$ASSET" '.assets[] | select(.name == $name) | .browser_download_url' "$TMP/release.json")"
+    ASSET_DIGEST="$(jq -r --arg name "$ASSET" '.assets[] | select(.name == $name) | (.digest // empty)' "$TMP/release.json")"
+
+    curl -fL --retry 8 --retry-all-errors --connect-timeout 20 \
+      "$ASSET_URL" -o "$TMP/$ASSET"
+
+    EXPECTED_SHA=""
+    if [[ "$ASSET_DIGEST" == sha256:* ]]; then
+      EXPECTED_SHA="${ASSET_DIGEST#sha256:}"
+    else
+      CHECKSUM_URL="$(jq -r '.assets[] | select(.name | test("(?i)(checksums|sha256)")) | .browser_download_url' "$TMP/release.json" | head -1)"
+      if [[ -n "$CHECKSUM_URL" && "$CHECKSUM_URL" != null ]]; then
+        curl -fL --retry 8 --retry-all-errors --connect-timeout 20 \
+          "$CHECKSUM_URL" -o "$TMP/checksums.txt"
+        EXPECTED_SHA="$(awk -v name="$ASSET" '$2 == name || $2 == "*" name {print $1; exit}' "$TMP/checksums.txt")"
+      fi
+    fi
+
+    if [[ -z "$EXPECTED_SHA" ]]; then
+      if [[ ! "${RTSP_ALLOW_UNVERIFIED_MEDIAMTX:-false}" =~ ^(1|true|yes|on)$ ]]; then
+        echo "MediaMTX release does not expose a SHA256 digest for $ASSET" >&2
+        exit 74
+      fi
+      echo "WARNING: installing MediaMTX without checksum verification" >&2
+      EXPECTED_SHA="$(sha256sum "$TMP/$ASSET" | awk '{print $1}')"
+    else
+      ACTUAL_SHA="$(sha256sum "$TMP/$ASSET" | awk '{print $1}')"
+      [[ "$ACTUAL_SHA" == "$EXPECTED_SHA" ]] || {
+        echo "MediaMTX SHA256 mismatch" >&2
+        exit 74
+      }
+    fi
+
+    cp -a "$TMP/$ASSET" "$MEDIAMTX_CACHE_DIR/$ASSET"
+    printf '%s  %s\n' "$EXPECTED_SHA" "$ASSET" \
+      >"$MEDIAMTX_CACHE_DIR/$ASSET.sha256"
+    chmod 0640 "$MEDIAMTX_CACHE_DIR/$ASSET" "$MEDIAMTX_CACHE_DIR/$ASSET.sha256"
+    chown root:newdomofon "$MEDIAMTX_CACHE_DIR/$ASSET" "$MEDIAMTX_CACHE_DIR/$ASSET.sha256"
+    echo "Cached verified MediaMTX archive: $MEDIAMTX_CACHE_DIR/$ASSET"
+  fi
+
+  tar -xzf "$TMP/$ASSET" -C "$TMP"
+  [[ -x "$TMP/mediamtx" ]] || {
+    echo "MediaMTX binary missing from release archive" >&2
     exit 74
   }
+
+  install -d -m 0755 /usr/local/bin /usr/local/lib/newdomofon-video /usr/local/share/newdomofon-video
+  install -m 0755 "$TMP/mediamtx" "$BINARY"
+  printf '%s\n' "$TAG" >"$VERSION_FILE"
+  chmod 0644 "$VERSION_FILE"
 fi
 
-tar -xzf "$TMP/$ASSET" -C "$TMP"
-[[ -x "$TMP/mediamtx" ]] || { echo "MediaMTX binary missing from release archive" >&2; exit 74; }
-
-install -d -m 0755 /usr/local/bin /usr/local/lib/newdomofon-video /usr/local/share/newdomofon-video
-install -m 0755 "$TMP/mediamtx" "$BINARY"
+install -d -m 0755 /usr/local/lib/newdomofon-video /usr/local/share/newdomofon-video
 install -m 0750 -o root -g newdomofon "$PROJECT_DIR/scripts/rtsp-relay-on-demand.sh" "$RELAY_SCRIPT"
-printf '%s\n' "$TAG" >"$VERSION_FILE"
-chmod 0644 "$VERSION_FILE"
 set_env RTSP_MEDIAMTX_VERSION "$TAG"
 
 install -d -m 0750 -o root -g newdomofon /etc/newdomofon-video
@@ -274,6 +366,7 @@ chmod 0640 "$CONFIG_FILE"
 install -m 0644 "$PROJECT_DIR/deploy/systemd/newdomofon-video-rtsp-gateway.service" "$UNIT_FILE"
 systemctl daemon-reload
 systemctl restart "$BACKEND_SERVICE"
+wait_for_backend
 systemctl enable --now "$SERVICE"
 
 for _ in $(seq 1 40); do
@@ -292,7 +385,8 @@ timeout 1 bash -c "</dev/tcp/127.0.0.1/${RTSP_PORT_VALUE}" 2>/dev/null || {
   exit 1
 }
 
-AUTH_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' \
+AUTH_STATUS="$(curl -sS --retry 3 --retry-connrefused \
+  -o /dev/null -w '%{http_code}' \
   -H 'content-type: application/json' \
   --data '{"action":"read","protocol":"rtsp","path":"healthcheck","user":"","password":""}' \
   "http://127.0.0.1:3000/api/internal/rtsp/auth?gateway_secret=${GATEWAY_SECRET}")"
@@ -318,4 +412,5 @@ echo "RTSP GATEWAY INSTALLED"
 echo "MediaMTX: $TAG"
 echo "Listen: 0.0.0.0:${RTSP_PORT_VALUE}/tcp"
 echo "Public template: $RTSP_TEMPLATE"
+echo "Cache: $MEDIAMTX_CACHE_DIR"
 echo "Backup: $BACKUP"
