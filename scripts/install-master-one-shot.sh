@@ -10,6 +10,10 @@ CERTBOT_EMAIL="${CERTBOT_EMAIL:-}"
 ADMIN_LOGIN="${ADMIN_LOGIN:-admin}"
 TLS_MODE="${TLS_MODE:-auto}"
 
+is_ipv4() {
+  [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]
+}
+
 while (($#)); do
   case "$1" in
     --domain) MASTER_DOMAIN="${2:-}"; shift 2 ;;
@@ -42,6 +46,10 @@ MASTER_DOMAIN="${MASTER_DOMAIN#http://}"
 MASTER_DOMAIN="${MASTER_DOMAIN#https://}"
 MASTER_DOMAIN="${MASTER_DOMAIN%%/*}"
 [[ -n "$MASTER_DOMAIN" ]] || { echo "Master domain or IP is required" >&2; exit 64; }
+
+if [[ -z "$CERTBOT_EMAIL" && -t 0 && "$TLS_MODE" != no ]] && ! is_ipv4 "$MASTER_DOMAIN"; then
+  read -r -p "Email for Let's Encrypt (optional): " CERTBOT_EMAIL
+fi
 
 export REPO_URL REPO_BRANCH PROJECT_DIR MASTER_DOMAIN CERTBOT_EMAIL ADMIN_LOGIN TLS_MODE
 
