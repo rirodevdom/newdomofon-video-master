@@ -119,8 +119,16 @@ bash /root/newdomofon-video-master-main/scripts/install-master-from-directory.sh
 3. исключает `.git`, `node_modules` и старые `dist`;
 4. создаёт локальный Git snapshot;
 5. устанавливает рабочую копию в `/opt/newdomofon-video-master`;
-6. выполняет полный one-shot deploy;
-7. сохраняет данные доступа.
+6. нормализует права production-копии для runtime-пользователя `newdomofon`;
+7. выполняет полный one-shot deploy;
+8. сохраняет данные доступа.
+
+Production checkout получает владельца `root:newdomofon`, каталог проекта имеет режим `0750`, а runtime-файлы доступны группе на чтение и проход. Это предотвращает systemd-ошибку:
+
+```text
+status=200/CHDIR
+Changing to the requested working directory failed: Permission denied
+```
 
 Если `/opt/newdomofon-video-master` уже существует, он переносится в:
 
@@ -163,6 +171,48 @@ curl -fsS http://127.0.0.1:3082/health | jq .
 
 ss -lntp | grep -E ':(3000|3057|3082|3083|3084|3085|3086|5432|8554|9997)\b'
 nginx -t
+```
+
+## Восстановление после status=200/CHDIR
+
+На свежем archive с исправлением выполните:
+
+```bash
+PROJECT_DIR=/opt/newdomofon-video-master \
+  bash /opt/newdomofon-video-master/scripts/repair-master-project-permissions.sh
+```
+
+Ручной эквивалент для старой копии проекта:
+
+```bash
+systemctl stop \
+  newdomofon-video-backend.service \
+  newdomofon-public-events-proxy.service \
+  newdomofon-smartyard-compat.service \
+  2>/dev/null || true
+
+chown -R root:newdomofon /opt/newdomofon-video-master
+chmod -R g+rX,o-rwx /opt/newdomofon-video-master
+chmod 0750 /opt/newdomofon-video-master
+
+if [ -d /opt/newdomofon-video-master/.git ]; then
+  chown -R root:root /opt/newdomofon-video-master/.git
+  chmod -R go-rwx /opt/newdomofon-video-master/.git
+fi
+
+sudo -u newdomofon \
+  test -r /opt/newdomofon-video-master/backend/dist/index.js
+
+systemctl daemon-reload
+systemctl reset-failed newdomofon-video-backend.service || true
+systemctl restart newdomofon-video-backend.service
+```
+
+После этого проверьте:
+
+```bash
+namei -l /opt/newdomofon-video-master/backend/dist/index.js
+curl -fsS http://127.0.0.1:3000/api/health | jq .
 ```
 
 ## Интернет-зависимости
