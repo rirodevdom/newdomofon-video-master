@@ -262,13 +262,23 @@ FFmpeg
 DNS A/AAAA record на master
 ```
 
-Master и node должны иметь синхронизированное время.
+Master и все video node должны использовать одну временную зону — **московское время** (`Europe/Moscow`). Это обеспечивает согласованные временные метки архива, событий, логов и токенов на всех серверах.
 
 ```bash
-timedatectl set-timezone UTC
+timedatectl set-timezone Europe/Moscow
 systemctl enable --now systemd-timesyncd
 timedatectl status
+date '+%Y-%m-%d %H:%M:%S %Z %z'
 ```
+
+Ожидаемая зона и смещение:
+
+```text
+Time zone: Europe/Moscow
+MSK +0300
+```
+
+Проверьте эту настройку на master и на каждой video node. После изменения временной зоны перезапуск сервисов не требуется.
 
 ---
 
