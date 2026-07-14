@@ -9,7 +9,7 @@ INSTALL_RTSP_GATEWAY="${INSTALL_RTSP_GATEWAY:-1}"
 BACKEND_HEALTH_TIMEOUT_SECONDS="${BACKEND_HEALTH_TIMEOUT_SECONDS:-60}"
 
 if [[ "$(id -u)" -ne 0 ]]; then
-  echo "Run as root: sudo PROJECT_DIR=$PROJECT_DIR bash scripts/deploy-master.sh" >&2
+  echo "Run as root: PROJECT_DIR=$PROJECT_DIR bash scripts/deploy-master.sh" >&2
   exit 1
 fi
 
@@ -42,18 +42,20 @@ normalize_project_permissions() {
     return 1
   }
 
-  PROJECT_DIR="$PROJECT_DIR" \
-    bash "$normalizer"
+  PROJECT_DIR="$PROJECT_DIR" bash "$normalizer"
 }
 
 cd "$PROJECT_DIR"
-install -d -m 0750 "$(dirname "$ENV_FILE")"
+install -d -o root -g root -m 0700 "$(dirname "$ENV_FILE")"
 if [[ ! -f "$ENV_FILE" ]]; then
   cp deploy/env/master.env.example "$ENV_FILE"
-  chmod 0640 "$ENV_FILE"
+  chown root:root "$ENV_FILE"
+  chmod 0600 "$ENV_FILE"
   echo "Created $ENV_FILE. Edit secrets and rerun this script."
   exit 2
 fi
+chown root:root "$ENV_FILE"
+chmod 0600 "$ENV_FILE"
 
 set -a
 # shellcheck disable=SC1090
@@ -79,8 +81,11 @@ npm prune --omit=dev
 cd "$PROJECT_DIR/frontend"
 npm ci --include=dev
 npm run build
+install -d -o root -g root -m 0755 /var/www/newdomofon-video
 rsync -a --delete dist/ /var/www/newdomofon-video/
-chown -R newdomofon:newdomofon /var/www/newdomofon-video
+chown -R root:root /var/www/newdomofon-video
+find /var/www/newdomofon-video -type d -exec chmod 0755 {} +
+find /var/www/newdomofon-video -type f -exec chmod 0644 {} +
 
 if [[ -d "$PROJECT_DIR/public-events-proxy" ]]; then
   cd "$PROJECT_DIR/public-events-proxy"
@@ -91,23 +96,22 @@ if [[ -d "$PROJECT_DIR/public-events-proxy" ]]; then
   fi
 fi
 
-install -d -o newdomofon -g newdomofon -m 0755 \
+install -d -o root -g root -m 0755 \
   /var/lib/newdomofon-video \
   /var/cache/newdomofon-video \
   /var/cache/newdomofon-video/smartyard-preview \
   /var/log/newdomofon-video
 
-# Archive/directory installs use a root-only temporary source and umask 077.
-# Normalize the production checkout before systemd starts services as the
-# unprivileged newdomofon user. This prevents status=200/CHDIR failures.
+# All NewDomofon Master application units run as root. Keep the project tree
+# root-only and normalize local ZIP/directory checkouts before systemd starts.
 normalize_project_permissions
 
-cp "$PROJECT_DIR/deploy/systemd/newdomofon-video-backend.service" /etc/systemd/system/
-cp "$PROJECT_DIR/deploy/systemd/newdomofon-public-events-proxy.service" /etc/systemd/system/
+install -m 0644 "$PROJECT_DIR/deploy/systemd/newdomofon-video-backend.service" /etc/systemd/system/
+install -m 0644 "$PROJECT_DIR/deploy/systemd/newdomofon-public-events-proxy.service" /etc/systemd/system/
 if [[ -f "$PROJECT_DIR/deploy/systemd/newdomofon-smartyard-compat.service" ]]; then
-  cp "$PROJECT_DIR/deploy/systemd/newdomofon-smartyard-compat.service" /etc/systemd/system/
+  install -m 0644 "$PROJECT_DIR/deploy/systemd/newdomofon-smartyard-compat.service" /etc/systemd/system/
 fi
-cp "$PROJECT_DIR/deploy/nginx/newdomofon-video.conf" /etc/nginx/sites-available/newdomofon-video.conf
+install -m 0644 "$PROJECT_DIR/deploy/nginx/newdomofon-video.conf" /etc/nginx/sites-available/newdomofon-video.conf
 ln -sf /etc/nginx/sites-available/newdomofon-video.conf /etc/nginx/sites-enabled/newdomofon-video.conf
 
 systemctl daemon-reload
@@ -120,10 +124,6 @@ if [[ -f /etc/systemd/system/newdomofon-smartyard-compat.service ]]; then
   systemctl restart newdomofon-smartyard-compat
 fi
 
-# The RTSP installer performs an HTTP authentication preflight against the
-# backend. On a fresh server systemd can need several seconds to start Node.js,
-# load the environment and connect to PostgreSQL. Never run the RTSP installer
-# until the backend health endpoint is actually ready.
 wait_for_backend
 
 if [[ "$INSTALL_RTSP_GATEWAY" =~ ^(1|true|yes|on)$ ]]; then
@@ -137,8 +137,6 @@ if [[ "$INSTALL_DISK_GUARD" =~ ^(1|true|yes|on)$ ]]; then
 fi
 
 # Strict master/node deployment rule: master must not record cameras.
-# A stale DVR service on the master can open RTSP/ONVIF sessions and compete
-# with the assigned video node, causing live stalls and duplicate collectors.
 if systemctl list-unit-files newdomofon-video-dvr.service >/dev/null 2>&1 || systemctl status newdomofon-video-dvr.service >/dev/null 2>&1; then
   systemctl disable --now newdomofon-video-dvr.service || true
 fi
@@ -146,7 +144,8 @@ fi
 nginx -t
 systemctl reload nginx
 
-echo "Master deployed. DVR service is disabled on strict master deployments."
+echo "Master deployed. NewDomofon application services run as root."
+echo "PostgreSQL remains under postgres and Nginx workers remain under www-data."
 if [[ "$INSTALL_DISK_GUARD" =~ ^(1|true|yes|on)$ ]]; then
   echo "Disk guard: cat /run/newdomofon-video/master-disk-state.json"
 fi
