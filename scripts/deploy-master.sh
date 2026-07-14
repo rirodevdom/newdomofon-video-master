@@ -34,6 +34,18 @@ wait_for_backend() {
   return 1
 }
 
+normalize_project_permissions() {
+  local normalizer="$PROJECT_DIR/scripts/lib/normalize-project-permissions.sh"
+
+  [[ -f "$normalizer" ]] || {
+    echo "Project permission normalizer not found: $normalizer" >&2
+    return 1
+  }
+
+  PROJECT_DIR="$PROJECT_DIR" \
+    bash "$normalizer"
+}
+
 cd "$PROJECT_DIR"
 install -d -m 0750 "$(dirname "$ENV_FILE")"
 if [[ ! -f "$ENV_FILE" ]]; then
@@ -84,6 +96,11 @@ install -d -o newdomofon -g newdomofon -m 0755 \
   /var/cache/newdomofon-video \
   /var/cache/newdomofon-video/smartyard-preview \
   /var/log/newdomofon-video
+
+# Archive/directory installs use a root-only temporary source and umask 077.
+# Normalize the production checkout before systemd starts services as the
+# unprivileged newdomofon user. This prevents status=200/CHDIR failures.
+normalize_project_permissions
 
 cp "$PROJECT_DIR/deploy/systemd/newdomofon-video-backend.service" /etc/systemd/system/
 cp "$PROJECT_DIR/deploy/systemd/newdomofon-public-events-proxy.service" /etc/systemd/system/
