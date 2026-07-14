@@ -1,278 +1,282 @@
 # NewDomofon Video Master
 
-Центральный **control plane**, API-шлюз, административная панель и пользовательский web-интерфейс системы NewDomofon Video.
+Центральный **control plane** системы NewDomofon Video: административная панель, PostgreSQL, управление устройствами и камерами, регистрация video node, управляемые токены, HTTPS media gateway, SmartYard compatibility и автоматический RTSP gateway.
 
-Этот репозиторий предназначен только для **master-сервера**. Видеоархив, FFmpeg recorder и локальная история событий камер работают на отдельных video node из репозитория [`rirodevdom/newdomofon-video-node`](https://github.com/rirodevdom/newdomofon-video-node).
+Этот репозиторий устанавливается **только на master-сервер**. Запись камер, live HLS, локальный архив и события выполняются на отдельных video node из репозитория `rirodevdom/newdomofon-video-node`.
 
-> Production-платформа: Debian 12, Node.js 22, PostgreSQL 15, Nginx, systemd. Docker не требуется.
+> Production: Debian 12, Node.js 22, PostgreSQL 15, Nginx, systemd, FFmpeg и MediaMTX. Docker не требуется.
 
 ---
 
 ## Содержание
 
-1. [Архитектура](#архитектура)
-2. [Компоненты и каталоги](#компоненты-и-каталоги)
-3. [Требования к серверу](#требования-к-серверу)
-4. [Порты и сетевой доступ](#порты-и-сетевой-доступ)
-5. [Быстрый план установки](#быстрый-план-установки)
-6. [Полная установка master на чистый Debian 12](#полная-установка-master-на-чистый-debian-12)
-7. [Регистрация первой video node](#регистрация-первой-video-node)
-8. [Добавление устройства и камеры](#добавление-устройства-и-камеры)
-9. [Управляемые токены и ссылки камер](#управляемые-токены-и-ссылки-камер)
-10. [SmartYard-Vue: live, архив, события и preview](#smartyard-vue-live-архив-события-и-preview)
-11. [Защита master от заполнения диска](#защита-master-от-заполнения-диска)
-12. [Проверка после установки](#проверка-после-установки)
-13. [Безопасное обновление production](#безопасное-обновление-production)
-14. [Backup и восстановление](#backup-и-восстановление)
-15. [Диагностика](#диагностика)
-16. [Безопасность](#безопасность)
-17. [Разработка и разделение репозиториев](#разработка-и-разделение-репозиториев)
+1. [Текущая архитектура](#текущая-архитектура)
+2. [Модель устройств, камер и статусов](#модель-устройств-камер-и-статусов)
+3. [Управляемые токены и вкладка «Ссылки»](#управляемые-токены-и-вкладка-ссылки)
+4. [Поддерживаемые форматы](#поддерживаемые-форматы)
+5. [Порты и production-пути](#порты-и-production-пути)
+6. [Требования](#требования)
+7. [Полная установка master](#полная-установка-master)
+8. [Регистрация video node](#регистрация-video-node)
+9. [Добавление устройств и камер](#добавление-устройств-и-камер)
+10. [Автоматический RTSP gateway](#автоматический-rtsp-gateway)
+11. [Проверка media-ссылок](#проверка-media-ссылок)
+12. [Безопасное обновление](#безопасное-обновление)
+13. [Backup и восстановление](#backup-и-восстановление)
+14. [Диагностика](#диагностика)
+15. [Безопасность](#безопасность)
 
 ---
 
-# Архитектура
-
-## Общая схема
+# Текущая архитектура
 
 ```text
-Браузер / SmartYard-Vue
-          |
-          | HTTPS 443
-          v
-+-----------------------------+
-| MASTER                      |
-| Nginx                       |
-| Vue/Vuetify frontend        |
-| Node.js backend :3000       |
-| PostgreSQL                  |
-| SmartYard gateway :3082     |
-+-----------------------------+
-          |
-          | node-agent API, media/event HMAC tokens
-          | private HTTP 3010 или public HTTPS 443
-          v
-+-----------------------------+
-| VIDEO NODE                  |
-| DVR engine :3010            |
-| FFmpeg recorder             |
-| HLS / archive / MP4 export  |
-| SQLite/WAL camera events    |
-+-----------------------------+
-          |
-          | RTSP / ONVIF / Hikvision
-          v
-       Камеры / NVR
+Браузер / SmartYard / VLC / FFplay
+                 |
+        HTTPS 443|         RTSP TCP 8554
+                 v               v
++------------------------------------------------------+
+| MASTER                                               |
+| Nginx                                                |
+| Vue/Vuetify frontend                                 |
+| Backend API :3000 + PostgreSQL                       |
+| SmartYard formats gateway :3082                      |
+| Preview gateway :3086                                |
+| Events gateway :3085                                 |
+| Node-aware media gateway :3084                       |
+| Legacy compatibility gateway :3083                   |
+| MediaMTX RTSP gateway :8554                          |
++------------------------------------------------------+
+                 |
+                 | node-agent config/commands
+                 | short-lived HMAC media/event tokens
+                 | private HTTP 3010 или node HTTPS
+                 v
++------------------------------------------------------+
+| VIDEO NODE                                           |
+| DVR engine :3010                                     |
+| FFmpeg recorder                                      |
+| HLS / MPEG-TS / DASH / JPEG / archive / MP4 export   |
+| SQLite/WAL camera events                             |
+| disk guard + archive/event synchronizer              |
++------------------------------------------------------+
+                 |
+                 | RTSP / ONVIF / Hikvision
+                 v
+              Камеры / NVR
 ```
 
-## Master отвечает за
+Master отвечает за:
 
 - пользователей, роли и RBAC;
-- устройства, камеры и группы камер;
-- регистрацию и управление video node;
-- назначение камер конкретным node;
-- хранение управляющей конфигурации в PostgreSQL;
-- административный и пользовательский web UI;
-- проверку прав пользователя на камеру;
-- выпуск короткоживущих внутренних media/event token для node;
-- управляемые внешние токены камер;
-- маршрутизацию live, archive, events и preview на назначенную node;
-- SmartYard-compatible URL;
-- аудит административных действий;
-- защиту master от критического заполнения диска.
+- PostgreSQL и административную конфигурацию;
+- устройства, камеры и группы;
+- регистрацию и heartbeat video node;
+- назначение устройства конкретной node;
+- хранение управляемых внешних токенов;
+- проверку пары «токен ↔ камера»;
+- HTTPS media routes и SmartYard compatibility;
+- автоматический RTSP gateway через MediaMTX;
+- выпуск короткоживущих внутренних node tokens;
+- аудит и защиту системного диска.
 
-## Master не должен
-
-- запускать FFmpeg recorder для удалённых камер;
-- хранить основной DVR-архив;
-- хранить ONVIF/Hikvision/video-motion события камер;
-- читать SQLite node напрямую;
-- подключаться к камерам по RTSP/ONVIF;
-- запускать `newdomofon-video-dvr.service`.
-
-При strict master deployment старый DVR unit автоматически отключается.
-
-## Где хранятся данные
-
-```text
-Master PostgreSQL:
-  пользователи, роли, устройства, камеры, node, токены, назначения, аудит
-
-Video node filesystem:
-  HLS/live, архивные сегменты, MP4 export, SQLite/WAL событий
-```
-
-Frontend запрашивает timeline через master. Master проверяет RBAC, определяет назначенную node, подписывает короткоживущий `scope=events` token и проксирует запрос. Event payload на master не копируется.
-
-## Контракты master/node
-
-```text
-contracts/node-agent-api-v1.md
-contracts/node-events-api-v1.md
-```
-
-При несовместимом изменении сначала обновляется контракт и обратно совместимый master, затем node.
+Master **не записывает камеры** и не хранит основной DVR-архив. На strict master сервис `newdomofon-video-dvr.service` должен быть отключён.
 
 ---
 
-# Компоненты и каталоги
+# Модель устройств, камер и статусов
 
-## Состав репозитория
+## Устройство — владелец конфигурации
+
+Устройство хранит:
+
+- тип подключения: `RTSP`, `ONVIF`, `HIKVISION`;
+- адрес, порт и credentials;
+- назначенную video node;
+- место хранения архива;
+- список каналов/камер;
+- параметры ONVIF, RTSP или Hikvision.
+
+Все камеры устройства наследуют:
 
 ```text
-backend/                  Node.js + TypeScript API, PostgreSQL, auth, RBAC
-frontend/                 Vue 3 + Vuetify web portal
-public-events-proxy/      legacy/public event compatibility
-smartyard-compat-proxy/   media, events и preview gateway для SmartYard
-media-public-proxy/       media compatibility helpers
-archive-policy-api/       archive policy helper
-contracts/                versioned master/node contracts
-deploy/env/               примеры environment
-deploy/nginx/             Nginx templates
-deploy/systemd/           systemd units
-deploy/journald/          лимиты systemd-journald
-scripts/                  install, deploy, disk guard и diagnostics
+device.dvr_server_id   → camera.dvr_server_id
+device.archive_storage → camera.archive_storage
+```
+
+Node и место хранения архива нельзя независимо изменить в форме камеры. При изменении устройства backend и PostgreSQL policy синхронизируют все его камеры, после чего затронутые node получают `reload_cameras`.
+
+## Отдельная форма камеры
+
+В разделе **«Камеры»** редактируется только:
+
+```text
+Камера включена: да / нет
+```
+
+Полная настройка потока выполняется внутри:
+
+```text
+Устройства → открыть устройство → Камеры устройства
+```
+
+## Статусы
+
+Ручное редактирование искусственного поля `status` не используется.
+
+Интерфейс показывает фактические признаки:
+
+- устройство включено/выключено;
+- камера включена/выключена;
+- node online/offline по heartbeat;
+- наличие recorder;
+- результаты ONVIF/Hikvision проверки;
+- состояние disk guard.
+
+---
+
+# Управляемые токены и вкладка «Ссылки»
+
+## Модель many-to-many
+
+```text
+одна камера → несколько токенов
+один токен → несколько камер
+```
+
+Добавление нового токена к камере **не удаляет** предыдущие привязки.
+
+У каждого токена доступны:
+
+- имя и описание;
+- scopes `camera` и/или `events`;
+- срок действия;
+- включение/выключение;
+- ротация;
+- список всех привязанных камер.
+
+Новые токены имеют компактный формат:
+
+```text
+m1.<payload-and-mac>
+```
+
+После ротации старое значение перестаёт работать, но связи с камерами сохраняются.
+
+## Интерфейс
+
+```text
+Администрирование
+├── Пользователи
+├── Токены
+└── Ссылки
+```
+
+Во вкладке **«Ссылки»**:
+
+1. раскройте нужную камеру;
+2. выберите уже привязанный токен или добавьте новый;
+3. нажмите **«Показать ссылки»**;
+4. скопируйте подходящий URL;
+5. при необходимости отвяжите только один конкретный токен.
+
+---
+
+# Поддерживаемые форматы
+
+Для потока `entrance_main` и токена `m1...` master формирует:
+
+| Формат | Пример | Назначение |
+|---|---|---|
+| HLS | `https://video.example.com/entrance_main/index.m3u8?token=...` | браузеры, HLS.js, SmartYard |
+| MPEG-TS | `https://video.example.com/entrance_main/live.ts?token=...` | VLC, FFmpeg, relay |
+| DASH | `https://video.example.com/entrance_main/live.mpd?token=...` | MPEG-DASH players |
+| JPEG | `https://video.example.com/entrance_main/snapshot.jpg?token=...` | snapshot/preview |
+| RTSP | `rtsp://token:<token>@video.example.com:8554/entrance_main` | VLC, NVR, FFplay |
+| Preview MP4 | `https://video.example.com/entrance_main/preview.mp4?token=...` | SmartYard preview |
+| Archive HLS | URL template с `start` и `end` | timeline/archive |
+| Events JSON | URL template с `start` и `end` | события камеры |
+
+HLS, MPEG-TS, DASH и JPEG проходят через HTTPS formats gateway. RTSP обслуживает MediaMTX на master.
+
+---
+
+# Порты и production-пути
+
+## Публичные порты master
+
+```text
+22/tcp    SSH, только доверенные адреса
+80/tcp    HTTP redirect и ACME
+443/tcp   frontend, API, HLS, MPEG-TS, DASH, JPEG, preview, archive, events
+8554/tcp  RTSP gateway, желательно ограничить доверенными IP/VPN
+```
+
+## Локальные порты master
+
+```text
+127.0.0.1:3000  backend API
+127.0.0.1:3057  public-events proxy
+127.0.0.1:3082  formats gateway
+127.0.0.1:3083  legacy compatibility
+127.0.0.1:3084  node-aware media
+127.0.0.1:3085  camera events
+127.0.0.1:3086  preview
+127.0.0.1:5432  PostgreSQL
+127.0.0.1:9997  MediaMTX control API
+0.0.0.0:8554     MediaMTX RTSP
 ```
 
 ## Production-пути
 
 ```text
-/opt/newdomofon-video-master/                   Git checkout
-/etc/newdomofon-video/app.env                   secrets и runtime config
-/var/www/newdomofon-video/                      собранный frontend
-/var/cache/newdomofon-video/smartyard-preview/  кеш preview.mp4
-/var/log/newdomofon-video/                      application logs/runtime path
-/run/newdomofon-video/master-disk-state.json    состояние disk guard
-/run/newdomofon-video/master-disk-critical      critical marker
+/opt/newdomofon-video-master/                    Git checkout
+/etc/newdomofon-video/app.env                    secrets/runtime config
+/etc/newdomofon-video/mediamtx.yml               MediaMTX config
+/usr/local/bin/mediamtx                          MediaMTX binary
+/usr/local/lib/newdomofon-video/rtsp-relay-on-demand.sh
+/var/www/newdomofon-video/                       frontend
+/var/cache/newdomofon-video/smartyard-preview/   preview cache
+/var/log/newdomofon-video/
+/run/newdomofon-video/master-disk-state.json
+/run/newdomofon-video/master-disk-critical
 /etc/nginx/sites-available/newdomofon-video.conf
 /etc/systemd/system/newdomofon-*.service
 ```
 
-Не помещайте `app.env`, database dumps, cache или runtime-файлы в Git.
-
 ---
 
-# Требования к серверу
-
-## Рекомендуемая конфигурация
+# Требования
 
 Минимум для небольшого объекта:
 
 ```text
-OS:       Debian 12 x86_64
-CPU:      2 vCPU
-RAM:      4 GB
-Disk:     20 GB SSD
-Node.js:  22.12+
-DB:       PostgreSQL 15
-Proxy:    Nginx
-Time:     chrony или systemd-timesyncd
+Debian 12 x86_64
+2–4 vCPU
+4–8 GB RAM
+20–40 GB SSD
+Node.js 22
+PostgreSQL 15
+Nginx
+FFmpeg
+DNS A/AAAA record на master
 ```
 
-Для большого количества пользователей, камер и частых timeline-запросов рекомендуется:
-
-```text
-CPU:      4+ vCPU
-RAM:      8+ GB
-Disk:     40+ GB SSD/NVMe
-Postgres: отдельный filesystem или отдельный DB server
-```
-
-Master не хранит основной видеоархив, поэтому ему не нужен многотерабайтный DVR-диск.
-
-## DNS
-
-Подготовьте DNS A/AAAA record, например:
-
-```text
-video.example.com -> публичный IP master
-```
-
-Проверка:
-
-```bash
-getent ahosts video.example.com
-```
-
-## Время
-
-Рекомендуется UTC:
+Master и node должны иметь синхронизированное время.
 
 ```bash
 timedatectl set-timezone UTC
 systemctl enable --now systemd-timesyncd
-
 timedatectl status
 ```
 
-Master и все node должны иметь синхронизированное время, иначе HMAC token могут считаться ещё не действующими или истёкшими.
-
 ---
 
-# Порты и сетевой доступ
+# Полная установка master
 
-## Публичные порты
+Все команды выполняются от `root`.
 
-```text
-22/tcp   SSH; только административные адреса
-80/tcp   HTTP, redirect и ACME challenge
-443/tcp  HTTPS frontend, API и SmartYard media routes
-```
-
-## Локальные master-порты
-
-```text
-127.0.0.1:3000  backend API
-127.0.0.1:3057  public-events-proxy
-127.0.0.1:3082  внешний SmartYard preview/media/events gateway
-127.0.0.1:3083  внутренний legacy compatibility gateway
-127.0.0.1:3084  внутренний node-aware media gateway
-127.0.0.1:3085  внутренний camera-events gateway
-127.0.0.1:5432  PostgreSQL
-```
-
-Порты `3083–3085` не следует публиковать наружу. Они являются внутренними слоями одного SmartYard compatibility stack.
-
-На strict master порт `3010` слушать не должен.
-
-## Связь с node
-
-Master должен иметь доступ к каждой node:
-
-```text
-предпочтительно: http://PRIVATE_NODE_IP:3010
-fallback:        https://video-node.example.com
-```
-
-Node должна иметь исходящий HTTPS-доступ к master для heartbeat, config и commands.
-
----
-
-# Быстрый план установки
-
-```text
-1. Подготовить Debian 12 и DNS.
-2. Клонировать master repository.
-3. Запустить install-debian12-prereqs.sh.
-4. Создать PostgreSQL role/database.
-5. Создать /etc/newdomofon-video/app.env.
-6. Запустить deploy-master.sh.
-7. Настроить server_name и TLS.
-8. Проверить backend, gateways и disk guard.
-9. Создать video node на master.
-10. Установить node из отдельного node repository.
-11. Добавить device/camera и назначить node.
-12. Создать managed token и получить SmartYard URL.
-```
-
----
-
-# Полная установка master на чистый Debian 12
-
-Все команды ниже выполняются от `root`, если не указано иное.
-
-## 1. Задайте переменные установки
-
-Замените примерные значения:
+## 1. Переменные
 
 ```bash
 export MASTER_DOMAIN="video.example.com"
@@ -281,181 +285,71 @@ export MASTER_DIR="/opt/newdomofon-video-master"
 export ADMIN_LOGIN="admin"
 ```
 
-Проверка:
-
-```bash
-printf 'domain=%s\nrepo=%s\ndir=%s\n' \
-  "$MASTER_DOMAIN" "$MASTER_REPO" "$MASTER_DIR"
-
-getent ahosts "$MASTER_DOMAIN"
-```
-
-## 2. Обновите Debian
+## 2. Debian и repository
 
 ```bash
 apt-get update
 apt-get dist-upgrade -y
 apt-get install -y git ca-certificates curl openssl
-reboot
-```
 
-После повторного входа:
-
-```bash
-uname -a
-cat /etc/debian_version
-```
-
-## 3. Клонируйте master repository
-
-Для чистой установки:
-
-```bash
 install -d -m 0755 /opt
-
 git clone "$MASTER_REPO" "$MASTER_DIR"
 cd "$MASTER_DIR"
 git switch main
 git pull --ff-only origin main
-
-git log -1 --oneline
-git status --short
 ```
 
-Не используйте старый объединённый monorepo и не помещайте master/node в один checkout.
-
-## 4. Установите системные зависимости
+## 3. Зависимости
 
 ```bash
-cd "$MASTER_DIR"
 bash scripts/install-debian12-prereqs.sh
-```
 
-Скрипт устанавливает:
-
-- Git, curl, jq, rsync;
-- Nginx;
-- PostgreSQL и `postgresql-contrib`;
-- FFmpeg;
-- build tools;
-- Node.js 22 при отсутствии подходящей версии;
-- system user `newdomofon`;
-- базовые runtime-каталоги.
-
-Проверка:
-
-```bash
 node --version
 npm --version
 psql --version
-ffmpeg -version | head -1
 nginx -v
-id newdomofon
+ffmpeg -version | head -1
 ```
 
-Ожидается Node.js `v22.x` или новее.
-
-## 5. Создайте PostgreSQL role и database
-
-Создадим случайный hex-пароль, который не требует URL encoding в `DATABASE_URL`:
+## 4. PostgreSQL
 
 ```bash
-umask 077
-DB_PASSWORD="$(openssl rand -hex 24)"
+DB_PASSWORD="$(openssl rand -base64 36 | tr -d '\n' | tr '/+' '_-')"
 
-sudo -u postgres psql \
-  -v ON_ERROR_STOP=1 \
-  --set=db_password="$DB_PASSWORD" <<'SQL'
-SELECT 'CREATE ROLE newdomofon LOGIN'
-WHERE NOT EXISTS (
-  SELECT 1 FROM pg_roles WHERE rolname = 'newdomofon'
-) \gexec
-
-ALTER ROLE newdomofon PASSWORD :'db_password';
-
-SELECT 'CREATE DATABASE newdomofon_video OWNER newdomofon'
-WHERE NOT EXISTS (
-  SELECT 1 FROM pg_database WHERE datname = 'newdomofon_video'
-) \gexec
-
-ALTER DATABASE newdomofon_video OWNER TO newdomofon;
+sudo -u postgres psql -v ON_ERROR_STOP=1 <<SQL
+CREATE ROLE newdomofon LOGIN PASSWORD '${DB_PASSWORD}';
+CREATE DATABASE newdomofon_video OWNER newdomofon;
 SQL
-
-printf '%s\n' "$DB_PASSWORD" \
-  > /root/newdomofon-master-db-password.txt
-chmod 600 /root/newdomofon-master-db-password.txt
 ```
 
-Проверка:
+Если role/database уже существуют, не создавайте их повторно — используйте существующие credentials.
+
+## 5. Environment
 
 ```bash
-PGPASSWORD="$DB_PASSWORD" \
-  psql -h 127.0.0.1 \
-  -U newdomofon \
-  -d newdomofon_video \
-  -c 'select current_database(), current_user, now();'
-```
-
-PostgreSQL не должен слушать публичный интерфейс:
-
-```bash
-ss -ltnp | grep ':5432'
-```
-
-## 6. Сгенерируйте secrets
-
-```bash
-umask 077
-
 JWT_SECRET="$(openssl rand -hex 48)"
-ADMIN_PASSWORD="$(openssl rand -base64 24 | tr -d '\n')"
+ADMIN_PASSWORD="$(openssl rand -base64 36 | tr -d '\n')"
 NODE_REGISTRATION_TOKEN="$(openssl rand -hex 32)"
 INTERNAL_DVR_SECRET="$(openssl rand -hex 32)"
-MANAGED_CAMERA_TOKEN_SECRET="$(openssl rand -hex 48)"
-```
 
-`MANAGED_CAMERA_TOKEN_SECRET` используется для коротких внешних managed token формата `m1.…`. Не меняйте его без необходимости: смена секрета немедленно инвалидирует все managed camera links.
+install -d -o root -g newdomofon -m 0750 /etc/newdomofon-video
 
-## 7. Создайте production environment
-
-```bash
-install -d -o root -g newdomofon -m 0750 \
-  /etc/newdomofon-video
-
-cat > /etc/newdomofon-video/app.env <<EOF
+cat >/etc/newdomofon-video/app.env <<EOF
 NODE_ENV=production
 BACKEND_PORT=3000
 DATABASE_URL=postgres://newdomofon:${DB_PASSWORD}@127.0.0.1:5432/newdomofon_video
-
 JWT_SECRET=${JWT_SECRET}
 ADMIN_LOGIN=${ADMIN_LOGIN}
 ADMIN_PASSWORD=${ADMIN_PASSWORD}
-MANAGED_CAMERA_TOKEN_SECRET=${MANAGED_CAMERA_TOKEN_SECRET}
-
 CORS_ORIGIN=https://${MASTER_DOMAIN}
 TRUST_PROXY=true
-APP_PUBLIC_URL=https://${MASTER_DOMAIN}
+
 SMARTYARD_PUBLIC_BASE_URL=https://${MASTER_DOMAIN}
-
-NODE_REGISTRATION_TOKEN=${NODE_REGISTRATION_TOKEN}
+APP_PUBLIC_URL=https://${MASTER_DOMAIN}
 INTERNAL_DVR_SECRET=${INTERNAL_DVR_SECRET}
-
-MEDIA_PUBLIC_BASE_URL=/api/media
+NODE_REGISTRATION_TOKEN=${NODE_REGISTRATION_TOKEN}
 PLAYBACK_TOKEN_TTL_SECONDS=900
-NODE_COMMAND_POLL_LIMIT=20
-NODE_EVENT_PROXY_TIMEOUT_MS=15000
-NODE_EVENT_QUERY_MAX_SECONDS=2678400
 
-# Пользовательский timeline: passive false/inactive snapshots скрыты.
-PUBLIC_EVENTS_INCLUDE_PASSIVE=false
-ONVIF_EVENT_SUPPRESS_REPEATED_STATE=true
-EVENT_LOGICAL_DEDUP_MS=2000
-
-# Strict master не использует локальный DVR. Значение оставлено только для
-# внутренних compatibility fallback routes.
-DVR_ENGINE_URL=http://127.0.0.1:3010
-
-# Master disk guard.
 MASTER_DISK_GUARD_PATHS=/:/var/lib/postgresql:/var/log/newdomofon-video
 MASTER_DISK_MIN_FREE_BYTES=2147483648
 MASTER_DISK_MIN_FREE_PERCENT=5
@@ -467,52 +361,31 @@ MASTER_JOURNAL_MAX_SIZE=512M
 MASTER_JOURNAL_MAX_AGE=7d
 MASTER_DISK_STALE_TMP_MINUTES=60
 MASTER_DISK_APT_CLEAN_ON_CRITICAL=true
+
+PUBLIC_EVENTS_INCLUDE_PASSIVE=false
+ONVIF_EVENT_SUPPRESS_REPEATED_STATE=true
+
+RTSP_GATEWAY_ENABLED=false
+RTSP_PUBLIC_PORT=8554
+RTSP_AUTO_OPEN_FIREWALL=true
+RTSP_MEDIAMTX_VERSION=
 EOF
 
 chown root:newdomofon /etc/newdomofon-video/app.env
 chmod 0640 /etc/newdomofon-video/app.env
 ```
 
-Сохраните bootstrap credentials отдельно:
+`install-rtsp-gateway.sh` автоматически добавит:
 
-```bash
-cat > /root/newdomofon-master-bootstrap-secrets.txt <<EOF
-MASTER_DOMAIN=${MASTER_DOMAIN}
-ADMIN_LOGIN=${ADMIN_LOGIN}
-ADMIN_PASSWORD=${ADMIN_PASSWORD}
-NODE_REGISTRATION_TOKEN=${NODE_REGISTRATION_TOKEN}
-DATABASE_PASSWORD=${DB_PASSWORD}
-EOF
-
-chmod 600 /root/newdomofon-master-bootstrap-secrets.txt
+```text
+RTSP_GATEWAY_ENABLED=true
+RTSP_PUBLIC_HOST=<master-domain>
+RTSP_PUBLIC_URL_TEMPLATE=rtsp://token:{token}@<master-domain>:8554/{stream}
+RTSP_GATEWAY_SHARED_SECRET=<generated>
+RTSP_RELAY_PUBLISH_SECRET=<generated>
 ```
 
-Проверка прав без вывода секретов:
-
-```bash
-namei -l /etc/newdomofon-video/app.env
-sudo -u newdomofon test -r /etc/newdomofon-video/app.env
-echo "app_env_readable_rc=$?"
-```
-
-Должно быть `app_env_readable_rc=0`.
-
-## 8. Уточните PostgreSQL data path для disk guard
-
-```bash
-PG_DATA="$(sudo -u postgres psql -Atqc 'show data_directory' postgres)"
-echo "PostgreSQL data directory: $PG_DATA"
-```
-
-Если путь отличается от `/var/lib/postgresql`, замените строку:
-
-```bash
-sed -i \
-  "s#^MASTER_DISK_GUARD_PATHS=.*#MASTER_DISK_GUARD_PATHS=/:${PG_DATA}:/var/log/newdomofon-video#" \
-  /etc/newdomofon-video/app.env
-```
-
-## 9. Выполните первый deploy
+## 6. Первый deploy
 
 ```bash
 cd "$MASTER_DIR"
@@ -521,29 +394,23 @@ PROJECT_DIR="$MASTER_DIR" \
 ENV_FILE=/etc/newdomofon-video/app.env \
 INSTALL_DISK_GUARD=1 \
 INSTALL_JOURNAL_LIMITS=1 \
+INSTALL_RTSP_GATEWAY=1 \
   bash scripts/deploy-master.sh
 ```
 
-Deploy выполняет:
+Deploy:
 
-1. preflight disk guard;
-2. `npm ci` и TypeScript build backend;
-3. PostgreSQL migrations;
-4. seed административного пользователя;
-5. build frontend;
-6. публикацию frontend в `/var/www/newdomofon-video`;
-7. установку public-events dependencies;
-8. установку systemd units;
-9. установку Nginx template;
-10. запуск backend, public-events и SmartYard gateway;
-11. установку master disk guard и journald limits;
-12. отключение старого DVR unit на master.
+- собирает backend и frontend;
+- применяет migrations и seed;
+- устанавливает systemd units;
+- устанавливает Nginx template;
+- запускает SmartYard gateways;
+- устанавливает master disk guard;
+- скачивает и проверяет MediaMTX;
+- создаёт автоматический RTSP gateway;
+- отключает DVR recorder на master.
 
-Не запускайте `npm audit fix` автоматически на production.
-
-## 10. Укажите production domain в Nginx
-
-При первом deploy устанавливается template с `server_name _;`:
+## 7. Nginx domain и TLS
 
 ```bash
 sed -i \
@@ -552,148 +419,44 @@ sed -i \
 
 nginx -t
 systemctl reload nginx
-```
 
-Проверка:
-
-```bash
-grep -n 'server_name' \
-  /etc/nginx/sites-available/newdomofon-video.conf
-```
-
-## 11. Выпустите TLS-сертификат
-
-```bash
 apt-get install -y certbot python3-certbot-nginx
 certbot --nginx -d "$MASTER_DOMAIN"
 certbot renew --dry-run
 ```
 
-После Certbot сохраните backup Nginx-файла:
+После Certbot не заменяйте production Nginx template без backup. Для новых media extensions используйте repository patcher:
 
 ```bash
-cp -a \
-  /etc/nginx/sites-available/newdomofon-video.conf \
-  /root/newdomofon-video.nginx-with-tls.conf
+NGINX_SITE=/etc/nginx/sites-available/newdomofon-video.conf \
+  bash "$MASTER_DIR/scripts/fix-nginx-admin-media-formats.sh"
 ```
 
-> `deploy-master.sh` копирует Nginx template заново. При последующих обновлениях используйте раздел «Безопасное обновление production» и всегда сохраняйте TLS-конфигурацию.
-
-## 12. Ограничьте firewall
-
-Сначала убедитесь, что SSH-доступ работает по ключу. Не применяйте правила вслепую.
-
-Публично нужны только:
-
-```text
-22/tcp  от административных IP
-80/tcp  от клиентов/ACME
-443/tcp от клиентов
-```
-
-PostgreSQL и порты `3000`, `3057`, `3082–3085` должны слушать localhost.
-
-## 13. Проверьте master
+## 8. Проверка
 
 ```bash
-systemctl is-active postgresql
 systemctl is-active newdomofon-video-backend.service
-systemctl is-active newdomofon-public-events-proxy.service
 systemctl is-active newdomofon-smartyard-compat.service
-systemctl is-active newdomofon-video-master-disk-guard.timer
+systemctl is-active newdomofon-video-rtsp-gateway.service
 
 curl -fsS http://127.0.0.1:3000/api/health | jq
 curl -fsS http://127.0.0.1:3082/health | jq
-curl -kfsS "https://${MASTER_DOMAIN}/api/health" | jq
 
-ss -ltnp | grep -E ':(3000|3057|3082|3083|3084|3085|5432)([[:space:]]|$)'
+ss -lntp | grep -E ':(3000|3082|3083|3084|3085|3086|8554|9997)\b'
+nginx -t
 ```
-
-Убедитесь, что DVR на master не запущен:
-
-```bash
-systemctl is-active newdomofon-video-dvr.service 2>/dev/null || true
-ss -ltnp | grep ':3010 ' || echo 'OK: strict master does not run DVR'
-```
-
-## 14. Войдите в web UI
-
-Откройте:
-
-```text
-https://video.example.com
-```
-
-Используйте `ADMIN_LOGIN` и `ADMIN_PASSWORD` из bootstrap-файла.
-
-После первого входа создайте отдельного администратора или смените bootstrap password согласно внутренней политике.
 
 ---
 
-# Регистрация первой video node
+# Регистрация video node
 
-Node создаётся через:
+## Через UI
 
 ```text
-Администрирование → Video nodes
+Администрирование → Nodes → Добавить node
 ```
 
-или API.
-
-## 1. Получите admin JWT
-
-```bash
-export MASTER_URL="https://${MASTER_DOMAIN}"
-export ADMIN_LOGIN="admin"
-read -rsp 'Admin password: ' ADMIN_PASSWORD
-echo
-
-AUTH_TOKEN="$(
-  curl -fsS \
-    -H 'Content-Type: application/json' \
-    -d "$(jq -nc \
-      --arg login "$ADMIN_LOGIN" \
-      --arg password "$ADMIN_PASSWORD" \
-      '{login:$login,password:$password}')" \
-    "$MASTER_URL/api/auth/login" \
-  | jq -r '.token // empty'
-)"
-
-test -n "$AUTH_TOKEN"
-echo "JWT received"
-```
-
-Не печатайте JWT в общий журнал.
-
-## 2. Создайте запись node
-
-```bash
-export NODE_NAME="video-node1"
-export NODE_PUBLIC_URL="https://video-node1.example.com"
-export NODE_INTERNAL_URL="http://10.0.0.31:3010"
-
-NODE_BOOTSTRAP="$(
-  curl -fsS -X POST \
-    -H "Authorization: Bearer $AUTH_TOKEN" \
-    -H 'Content-Type: application/json' \
-    -d "$(jq -nc \
-      --arg name "$NODE_NAME" \
-      --arg public "$NODE_PUBLIC_URL" \
-      --arg internal "$NODE_INTERNAL_URL" \
-      '{
-        name:$name,
-        public_base_url:$public,
-        internal_url:$internal,
-        is_enabled:true,
-        capabilities:{live:true,archive:true,events:true,export:true}
-      }')" \
-    "$MASTER_URL/api/dvr-servers"
-)"
-
-echo "$NODE_BOOTSTRAP" | jq '{node_id,has_agent_token:(.agent_token|length>0),has_media_secret:(.media_secret|length>0)}'
-```
-
-Ответ содержит секреты только при создании/ротации:
+Сохраните выданные:
 
 ```text
 node_id
@@ -701,919 +464,288 @@ agent_token
 media_secret
 ```
 
-Сохраните их:
+Они показываются только при создании/ротации.
 
-```bash
-printf '%s\n' "$NODE_BOOTSTRAP" \
-  > "/root/${NODE_NAME}-bootstrap.json"
-chmod 600 "/root/${NODE_NAME}-bootstrap.json"
-```
-
-Передайте файл на node через защищённый канал.
-
-## 3. Установите node
-
-Используйте инструкцию из отдельного репозитория:
-
-```text
-https://github.com/rirodevdom/newdomofon-video-node
-```
-
-После запуска node проверьте heartbeat:
+После запуска node:
 
 ```bash
 curl -fsS \
-  -H "Authorization: Bearer $AUTH_TOKEN" \
-  "$MASTER_URL/api/dvr-servers" \
-  | jq '.items[] | {id,name,status,last_seen_at,camera_count,storage,capabilities}'
+  -H "Authorization: Bearer <ADMIN_JWT>" \
+  "https://${MASTER_DOMAIN}/api/dvr-servers" \
+  | jq '.items[] | {name,status,last_seen_at,camera_count,storage}'
 ```
 
-Ожидается:
-
-```text
-status=online
-last_seen_at регулярно обновляется
-```
-
-## Ротация node credentials
-
-```bash
-NODE_ID="$(echo "$NODE_BOOTSTRAP" | jq -r '.node_id')"
-
-curl -fsS -X POST \
-  -H "Authorization: Bearer $AUTH_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"rotate_media_secret":true}' \
-  "$MASTER_URL/api/dvr-servers/$NODE_ID/rotate-token" \
-  | jq
-```
-
-После ротации сразу обновите `DVR_NODE_TOKEN` и `DVR_NODE_MEDIA_SECRET` на node и перезапустите DVR service. Старые значения перестают работать.
+Ожидается `status=online`.
 
 ---
 
-# Добавление устройства и камеры
+# Добавление устройств и камер
 
-Рекомендуемый способ — web UI. API-примеры ниже полезны для автоматизации.
-
-## Важные понятия
+Рекомендуемый порядок:
 
 ```text
-Device  = физическая камера/NVR и её credentials
-Camera  = конкретный видеопоток с уникальным stream_name
-Node    = сервер, который записывает Camera
+1. Устройства → Добавить устройство.
+2. Выбрать RTSP / ONVIF / HIKVISION.
+3. Указать credentials.
+4. Выбрать node.
+5. Выбрать archive_storage.
+6. Открыть камеры устройства.
+7. Найти/добавить каналы.
+8. Проверить recorder на node.
 ```
 
-`stream_name` допускает только:
+Перемещение устройства на другую node переносит все его камеры.
 
-```text
-A-Z a-z 0-9 _ -
-```
-
-Он должен быть уникальным.
-
-## ONVIF device через API
-
-```bash
-NODE_ID="PASTE_NODE_UUID"
-
-DEVICE_ID="$(
-  curl -fsS -X POST \
-    -H "Authorization: Bearer $AUTH_TOKEN" \
-    -H 'Content-Type: application/json' \
-    -d "$(jq -nc \
-      --arg node "$NODE_ID" \
-      '{
-        name:"Entrance camera",
-        connection_type:"ONVIF",
-        archive_storage:"node",
-        dvr_server_id:$node,
-        host:"192.168.10.20",
-        port:80,
-        username:"operator",
-        password:"CHANGE_CAMERA_PASSWORD",
-        comment:"Main entrance",
-        status:"unknown",
-        is_enabled:true
-      }')" \
-    "$MASTER_URL/api/devices" \
-  | jq -r '.id'
-)"
-
-echo "DEVICE_ID=$DEVICE_ID"
-```
-
-Не вставляйте реальные пароли в shell history на shared server. Для production лучше создать JSON-файл с `chmod 600` или использовать UI.
-
-## Camera через API
-
-Камера может вернуть RTSP URI без userinfo. Node безопасно подставляет сохранённые device/ONVIF credentials в памяти при запуске FFmpeg.
-
-```bash
-CAMERA_ID="$(
-  curl -fsS -X POST \
-    -H "Authorization: Bearer $AUTH_TOKEN" \
-    -H 'Content-Type: application/json' \
-    -d "$(jq -nc \
-      --arg device "$DEVICE_ID" \
-      --arg node "$NODE_ID" \
-      '{
-        name:"Entrance stream",
-        stream_name:"entrance_main",
-        source_url:"rtsp://192.168.10.20:554/Streaming/Channels/101",
-        archive_storage:"node",
-        device_id:$device,
-        dvr_server_id:$node,
-        retention_days:14,
-        is_enabled:true,
-        onvif_xaddr:"http://192.168.10.20/onvif/device_service",
-        onvif_port:80,
-        onvif_username:"operator",
-        onvif_password:"CHANGE_CAMERA_PASSWORD"
-      }')" \
-    "$MASTER_URL/api/cameras" \
-  | jq -r '.id'
-)"
-
-echo "CAMERA_ID=$CAMERA_ID"
-```
-
-Создание/изменение/удаление камеры увеличивает `config_generation` и ставит node command `reload_cameras`. Обычно node подхватывает камеру без ручного restart.
-
-## Назначение существующих камер node
-
-```bash
-CAMERA_IDS_JSON="$(jq -nc --arg id "$CAMERA_ID" '[ $id ]')"
-
-curl -fsS -X POST \
-  -H "Authorization: Bearer $AUTH_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d "$(jq -nc --argjson ids "$CAMERA_IDS_JSON" '{camera_ids:$ids}')" \
-  "$MASTER_URL/api/dvr-servers/$NODE_ID/assign-cameras" \
-  | jq
-```
-
-## Проверка назначения
-
-```bash
-curl -fsS \
-  -H "Authorization: Bearer $AUTH_TOKEN" \
-  "$MASTER_URL/api/cameras" \
-  | jq '.items[] | {id,name,stream_name,dvr_server_name,retention_days,is_enabled}'
-```
-
-На node:
-
-```bash
-curl -fsS http://127.0.0.1:3010/cameras/entrance_main/status | jq
-```
-
-Успешный recorder показывает `recording=true`.
+Не назначайте отдельную node из формы камеры: устройство является единственным источником placement policy.
 
 ---
 
-# Управляемые токены и ссылки камер
+# Автоматический RTSP gateway
 
-## Модель доступа
-
-Управляемый token создаётся один раз в администрировании. Он может быть:
-
-- привязан к одной или нескольким камерам;
-- отключён;
-- включён;
-- ротирован;
-- ограничен сроком действия;
-- выдан с правом `camera`, `events` или обоими.
-
-Для каждой камеры хранится **одна текущая привязка**. Выбор другого token перепривязывает камеру атомарно. Один token может обслуживать много камер.
-
-Новые token имеют компактный формат:
+## Как работает
 
 ```text
-m1.<payload-and-mac>
+RTSP client
+   |
+   | rtsp://token:<managed-token>@master:8554/<stream>
+   v
+MediaMTX
+   |
+   | HTTP auth → backend
+   | проверка active/expiry/scope/assignment
+   v
+runOnDemand
+   |
+   | backend resolve assigned node
+   | short-lived scope=live token
+   v
+node /cameras/<stream>/rtsp-relay.ts
+   |
+   | FFmpeg copy
+   v
+MediaMTX local publisher → RTSP client
 ```
 
-Обычная длина — 46 символов. Старые `mct1` token остаются обратно совместимыми.
+Relay создаётся только при первом читателе и останавливается после отключения последнего.
 
-## Через web UI
-
-```text
-Администрирование
-  → Токены
-  → Создать управляемый токен камер
-  → Ссылки камер
-  → выбрать token
-  → Привязать и открыть / Показать ссылки
-```
-
-После перезагрузки страницы select камеры восстанавливает текущий token.
-
-## Создание token через API
-
-```bash
-MANAGED_TOKEN_RESPONSE="$(
-  curl -fsS -X POST \
-    -H "Authorization: Bearer $AUTH_TOKEN" \
-    -H 'Content-Type: application/json' \
-    -d '{
-      "name":"SmartYard production",
-      "description":"Основная интеграция двора",
-      "scopes":["camera","events"],
-      "expires_at":null
-    }' \
-    "$MASTER_URL/api/tokens/managed-camera-tokens"
-)"
-
-MANAGED_TOKEN_ID="$(echo "$MANAGED_TOKEN_RESPONSE" | jq -r '.item.id')"
-
-echo "$MANAGED_TOKEN_RESPONSE" \
-  | jq '.item | {id,name,generation,scopes,is_active,expires_at,token_length:(.token|length)}'
-```
-
-Не публикуйте поле `.token`.
-
-## Получение ссылок камеры
-
-```bash
-CAMERA_LINKS="$(
-  curl -fsS -X POST \
-    -H "Authorization: Bearer $AUTH_TOKEN" \
-    -H 'Content-Type: application/json' \
-    -d "$(jq -nc --arg id "$MANAGED_TOKEN_ID" '{managed_token_id:$id}')" \
-    "$MASTER_URL/api/tokens/camera-links/$CAMERA_ID"
-)"
-
-echo "$CAMERA_LINKS" | jq '{
-  camera,
-  managed_token,
-  assignment_changed,
-  smartyard_url,
-  live_url,
-  archive_url_template,
-  events_url_template
-}'
-```
-
-Повторный вызов с тем же token возвращает те же ссылки. Вызов с другим token заменяет текущую привязку.
-
-## Ротация token
-
-```bash
-curl -fsS -X POST \
-  -H "Authorization: Bearer $AUTH_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{}' \
-  "$MASTER_URL/api/tokens/managed-camera-tokens/$MANAGED_TOKEN_ID/rotate" \
-  | jq '.item | {id,name,generation,token_length:(.token|length)}'
-```
-
-После ротации старые ссылки этого token перестают работать. Привязки к камерам сохраняются; ссылки нужно открыть и скопировать повторно.
-
-## Отключение token
-
-```bash
-curl -fsS -X PATCH \
-  -H "Authorization: Bearer $AUTH_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"is_active":false}' \
-  "$MASTER_URL/api/tokens/managed-camera-tokens/$MANAGED_TOKEN_ID" \
-  | jq
-```
-
----
-
-# SmartYard-Vue: live, архив, события и preview
-
-Общая ссылка имеет вид:
-
-```text
-https://video.example.com/<stream_name>/?token=m1....
-```
-
-SmartYard compatibility routes:
-
-```text
-/<stream>/index.m3u8
-/<stream>/video.m3u8
-/<stream>/archive.m3u8
-/<stream>/preview.mp4
-/<stream>/<unix>-preview.mp4
-/<stream>/events.json
-/<stream>/motion_events.json
-/<stream>/events/summary
-/<stream>/recording_status.json
-/<stream>/media_info.json
-```
-
-Master gateway:
-
-1. проверяет managed token и привязку камеры;
-2. определяет назначенную node;
-3. выпускает короткий внутренний node token;
-4. получает media/events/export с node;
-5. возвращает данные SmartYard-Vue.
-
-Preview берётся из последнего доступного архивного диапазона node, формируется через короткий MP4 export, кешируется на master и отдаётся с HTTP Range (`200` или `206`).
-
-## Диагностика preview
+## Ручная повторная установка
 
 ```bash
 cd /opt/newdomofon-video-master
 
-read -rsp 'SmartYard camera URL: ' SMARTYARD_URL
-echo
-
-SMARTYARD_URL="$SMARTYARD_URL" \
-  bash scripts/diagnose-smartyard-preview.sh
+PROJECT_DIR=/opt/newdomofon-video-master \
+ENV_FILE=/etc/newdomofon-video/app.env \
+  bash scripts/install-rtsp-gateway.sh
 ```
 
-Успешный результат:
-
-```text
-http=200                  # 206 также допустим
-content_type=video/mp4
-route=node-preview-export # или node-preview-cache
-compat=v303-node-preview-gateway
-SMARTYARD PREVIEW VERIFIED
-```
-
-## Health SmartYard gateway
+Проверка:
 
 ```bash
-curl -fsS http://127.0.0.1:3082/health | jq
+systemctl status newdomofon-video-rtsp-gateway.service --no-pager
+ss -lntp | grep ':8554'
+grep -E '^RTSP_(GATEWAY_ENABLED|PUBLIC_HOST|PUBLIC_PORT|PUBLIC_URL_TEMPLATE|MEDIAMTX_VERSION)=' \
+  /etc/newdomofon-video/app.env
 ```
 
-Проверьте внутренние порты:
-
-```bash
-ss -ltnp | grep -E ':(3082|3083|3084|3085)([[:space:]]|$)'
-```
-
-## Event API
-
-Logical timeline по умолчанию:
-
-- оставляет активные motion events;
-- скрывает passive `false/inactive` snapshots;
-- объединяет близкие эквивалентные ONVIF topics;
-- не удаляет raw-события на node.
-
-Для диагностики backend API поддерживает raw mode там, где он предусмотрен маршрутом.
+RTSP gateway требует актуальную node, содержащую endpoint `/cameras/:stream/rtsp-relay.ts`. Поэтому при обновлении сначала обновляется node, затем master.
 
 ---
 
-# Защита master от заполнения диска
+# Проверка media-ссылок
 
-Master disk guard запускается systemd timer и проверяет:
-
-```text
-/
-PostgreSQL data filesystem
-/var/log/newdomofon-video
-```
-
-По умолчанию critical возникает, если свободно меньше более строгого значения:
-
-```text
-max(2 GiB, 5% filesystem)
-```
-
-Возврат из warning/critical требует:
-
-```text
-max(4 GiB, 10% filesystem)
-```
-
-Также контролируются свободные inode:
-
-```text
-critical: <5%
-recovery: >=8%
-```
-
-Guard безопасно очищает:
-
-- старый journald в заданных пределах;
-- временные `newdomofon-*`, `nd-export-*`, `npm-*` каталоги;
-- APT cache при critical.
-
-Guard **не удаляет PostgreSQL data files**.
-
-При critical создаётся:
-
-```text
-/run/newdomofon-video/master-disk-critical
-```
-
-Backend сохраняет health/read-only операции, а изменяющие административные запросы могут получить:
-
-```text
-HTTP 507 Insufficient Storage
-Retry-After: 60
-```
-
-## Проверка состояния
+## HLS
 
 ```bash
-cat /run/newdomofon-video/master-disk-state.json | jq
-
-systemctl status \
-  newdomofon-video-master-disk-guard.timer \
-  --no-pager -l
-
-journalctl \
-  -u newdomofon-video-master-disk-guard.service \
-  -n 200 --no-pager
+curl -ksS "$HLS_URL" | head
 ```
 
-## Ручной запуск
+Ожидается `#EXTM3U`.
+
+## MPEG-TS
 
 ```bash
-NEWDOMOFON_ENV_FILE=/etc/newdomofon-video/app.env \
-  /usr/local/sbin/newdomofon-master-disk-guard
+timeout 8 curl -ksS "$MPEG_TS_URL" -o /tmp/live.ts || true
+file /tmp/live.ts
+ls -lh /tmp/live.ts
 ```
 
-## Проверка filesystem
+## DASH
 
 ```bash
-PG_DATA="$(sudo -u postgres psql -Atqc 'show data_directory' postgres)"
+curl -ksS "$DASH_URL" -o /tmp/live.mpd
+grep -m1 '<MPD' /tmp/live.mpd
+```
 
-df -hT / "$PG_DATA" /var/log/newdomofon-video
-df -ih / "$PG_DATA" /var/log/newdomofon-video
-journalctl --disk-usage
+## JPEG
+
+```bash
+curl -ksS "$JPEG_URL" -o /tmp/snapshot.jpg
+file /tmp/snapshot.jpg
+```
+
+## RTSP
+
+```bash
+timeout 30 ffprobe \
+  -v error \
+  -rtsp_transport tcp \
+  -show_entries stream=index,codec_type,codec_name,width,height \
+  -of json \
+  "$RTSP_URL" | jq
 ```
 
 ---
 
-# Проверка после установки
+# Безопасное обновление
 
-## Все сервисы
+Порядок при изменениях media/RTSP:
 
-```bash
-systemctl status postgresql --no-pager -l
-systemctl status newdomofon-video-backend.service --no-pager -l
-systemctl status newdomofon-public-events-proxy.service --no-pager -l
-systemctl status newdomofon-smartyard-compat.service --no-pager -l
-systemctl status newdomofon-video-master-disk-guard.timer --no-pager -l
+```text
+1. Обновить все video node.
+2. Проверить node health и recorder.
+3. Обновить master.
+4. Проверить backend/gateways.
+5. Проверить ссылки из «Администрирование → Ссылки».
 ```
 
-## HTTP checks
+Обновление master:
 
 ```bash
-curl -i http://127.0.0.1:3000/api/health
-curl -i http://127.0.0.1:3082/health
-curl -kI "https://${MASTER_DOMAIN}/"
-curl -kfsS "https://${MASTER_DOMAIN}/api/health" | jq
-```
+cd /opt/newdomofon-video-master
 
-## PostgreSQL tables
-
-```bash
-set -a
-. /etc/newdomofon-video/app.env
-set +a
-
-psql "$DATABASE_URL" -P pager=off -c '\dt'
-
-psql "$DATABASE_URL" -P pager=off -c '
-SELECT name,status,last_seen_at,public_base_url,internal_url
-FROM dvr_servers
-ORDER BY name;
-'
-```
-
-## Managed token assignments
-
-```bash
-psql "$DATABASE_URL" -P pager=off -c '
-SELECT
-  c.name AS camera,
-  c.stream_name,
-  t.name AS managed_token,
-  a.created_at AS assigned_at
-FROM managed_camera_token_cameras a
-JOIN cameras c ON c.id = a.camera_id
-JOIN managed_camera_tokens t ON t.id = a.token_id
-ORDER BY c.name;
-'
-```
-
-Для одной камеры должна существовать не более чем одна текущая строка assignment.
-
-## Nginx route check
-
-```bash
-nginx -t
-nginx -T 2>/dev/null \
-  | grep -nE 'server_name|3082|events\.json|preview\.mp4' \
-  | head -100
-```
-
----
-
-# Безопасное обновление production
-
-## Важно про Nginx и Certbot
-
-`scripts/deploy-master.sh` копирует repository Nginx template в `/etc/nginx/sites-available/newdomofon-video.conf`. После того как Certbot добавил TLS, повторный полный deploy может заменить production-файл.
-
-Для регулярного обновления рекомендуется application-only процедура ниже. Nginx/systemd templates обновляйте отдельно после просмотра diff.
-
-## 1. Создайте backup
-
-```bash
-set +e
-set +u
-set +E
-set +o pipefail
-
-PROJECT="/opt/newdomofon-video-master"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP="/opt/newdomofon-video-migration-backups/master-update-$STAMP"
-
 install -d -m 0750 "$BACKUP"
 
-cp -a /etc/newdomofon-video "$BACKUP/etc-newdomofon-video"
-cp -a /etc/nginx/sites-available/newdomofon-video.conf \
-  "$BACKUP/nginx.conf"
-cp -a /etc/systemd/system/newdomofon-*.service \
-  "$BACKUP/" 2>/dev/null || true
-cp -a /etc/systemd/system/newdomofon-*.timer \
-  "$BACKUP/" 2>/dev/null || true
-
-git -C "$PROJECT" status --short > "$BACKUP/git-status.txt"
-git -C "$PROJECT" rev-parse HEAD > "$BACKUP/git-commit.txt"
-git -C "$PROJECT" diff --binary > "$BACKUP/worktree.patch" || true
+cp -a /etc/newdomofon-video/app.env "$BACKUP/"
+cp -a /etc/nginx/sites-available/newdomofon-video.conf "$BACKUP/"
 
 set -a
 . /etc/newdomofon-video/app.env
 set +a
+pg_dump -Fc "$DATABASE_URL" >"$BACKUP/postgresql.dump"
 
-pg_dump -Fc "$DATABASE_URL" > "$BACKUP/postgresql.dump"
-rsync -a /var/www/newdomofon-video/ "$BACKUP/web-root/"
+git status --short >"$BACKUP/git-status.txt"
+git diff --binary >"$BACKUP/worktree.patch"
+
+git stash push -u -m "before-master-update-$STAMP" || true
+git fetch origin main
+git switch main
+git reset --hard origin/main
+
+PROJECT_DIR=/opt/newdomofon-video-master \
+ENV_FILE=/etc/newdomofon-video/app.env \
+INSTALL_DISK_GUARD=1 \
+INSTALL_JOURNAL_LIMITS=1 \
+INSTALL_RTSP_GATEWAY=1 \
+  bash scripts/deploy-master.sh
 ```
 
-## 2. Обновите checkout
+Проверяйте итоговый commit:
 
 ```bash
-git -C "$PROJECT" stash push -u \
-  -m "production-before-update-$STAMP" || true
-
-git -C "$PROJECT" fetch origin main
-git -C "$PROJECT" switch main
-git -C "$PROJECT" reset --hard origin/main
-
-git -C "$PROJECT" log -1 --oneline
+git log -1 --oneline
+git status --short
 ```
-
-## 3. Disk preflight
-
-```bash
-NEWDOMOFON_ENV_FILE=/etc/newdomofon-video/app.env \
-  bash "$PROJECT/scripts/master-disk-guard.sh"
-
-cat /run/newdomofon-video/master-disk-state.json | jq
-
-test ! -e /run/newdomofon-video/master-disk-critical
-```
-
-## 4. Соберите backend и frontend до restart
-
-```bash
-cd "$PROJECT/backend"
-npm ci --include=dev
-npm run build
-npm run migrate
-npm run seed
-npm prune --omit=dev
-
-cd "$PROJECT/frontend"
-npm ci --include=dev
-npm run build
-
-rsync -a --delete dist/ /var/www/newdomofon-video/
-chown -R newdomofon:newdomofon /var/www/newdomofon-video
-```
-
-## 5. Обновите systemd units при необходимости
-
-Сначала сравните:
-
-```bash
-diff -u \
-  /etc/systemd/system/newdomofon-video-backend.service \
-  "$PROJECT/deploy/systemd/newdomofon-video-backend.service" || true
-
-diff -u \
-  /etc/systemd/system/newdomofon-smartyard-compat.service \
-  "$PROJECT/deploy/systemd/newdomofon-smartyard-compat.service" || true
-```
-
-После проверки:
-
-```bash
-install -m 0644 \
-  "$PROJECT/deploy/systemd/newdomofon-video-backend.service" \
-  /etc/systemd/system/newdomofon-video-backend.service
-
-install -m 0644 \
-  "$PROJECT/deploy/systemd/newdomofon-public-events-proxy.service" \
-  /etc/systemd/system/newdomofon-public-events-proxy.service
-
-install -m 0644 \
-  "$PROJECT/deploy/systemd/newdomofon-smartyard-compat.service" \
-  /etc/systemd/system/newdomofon-smartyard-compat.service
-
-systemctl daemon-reload
-```
-
-## 6. Проверьте Nginx template без слепой замены
-
-```bash
-diff -u \
-  /etc/nginx/sites-available/newdomofon-video.conf \
-  "$PROJECT/deploy/nginx/newdomofon-video.conf" || true
-```
-
-Переносите новые `location` вручную либо после backup снова примените domain/TLS через Certbot. Не копируйте template поверх production TLS-конфига без проверки.
-
-## 7. Перезапустите services
-
-```bash
-systemctl restart newdomofon-video-backend.service
-systemctl restart newdomofon-public-events-proxy.service
-systemctl restart newdomofon-smartyard-compat.service
-
-for i in $(seq 1 60); do
-  if curl -fsS http://127.0.0.1:3000/api/health >/tmp/master-health.json; then
-    break
-  fi
-  sleep 1
-done
-
-jq . /tmp/master-health.json
-curl -fsS http://127.0.0.1:3082/health | jq
-nginx -t
-```
-
-Не применяйте сохранённый stash автоматически. Сначала сравните его с новым `main`.
 
 ---
 
 # Backup и восстановление
 
-## Что обязательно сохранять
-
-```text
-/etc/newdomofon-video/
-/etc/nginx/sites-available/newdomofon-video.conf
-/etc/systemd/system/newdomofon-*.service
-/etc/systemd/system/newdomofon-*.timer
-/var/www/newdomofon-video/
-PostgreSQL database newdomofon_video
-текущий Git commit
-```
-
-## PostgreSQL backup
+Минимальный backup master:
 
 ```bash
+STAMP="$(date +%Y%m%d-%H%M%S)"
+BACKUP="/opt/newdomofon-video-backups/master-$STAMP"
+install -d -m 0750 "$BACKUP"
+
+cp -a /etc/newdomofon-video "$BACKUP/"
+cp -a /etc/nginx/sites-available/newdomofon-video.conf "$BACKUP/"
+cp -a /etc/systemd/system/newdomofon-*.service "$BACKUP/" 2>/dev/null || true
+
 set -a
 . /etc/newdomofon-video/app.env
 set +a
+pg_dump -Fc "$DATABASE_URL" >"$BACKUP/newdomofon_video.dump"
 
-install -d -m 0700 /var/backups/newdomofon-video
-
-pg_dump -Fc "$DATABASE_URL" \
-  > "/var/backups/newdomofon-video/master-$(date +%Y%m%d-%H%M%S).dump"
+git -C /opt/newdomofon-video-master rev-parse HEAD \
+  >"$BACKUP/git-commit.txt"
 ```
 
-Проверка dump:
-
-```bash
-pg_restore --list /var/backups/newdomofon-video/master-*.dump \
-  | head -30
-```
-
-## Пример восстановления в тестовую database
-
-```bash
-sudo -u postgres createdb \
-  -O newdomofon \
-  newdomofon_video_restore_test
-
-pg_restore \
-  --clean --if-exists \
-  --no-owner \
-  --dbname=postgres://newdomofon:${DB_PASSWORD}@127.0.0.1:5432/newdomofon_video_restore_test \
-  /var/backups/newdomofon-video/MASTER_DUMP.dump
-```
-
-Сначала всегда проверяйте восстановление в отдельной database.
-
-## Rollback приложения
-
-```bash
-PROJECT="/opt/newdomofon-video-master"
-OLD_COMMIT="PASTE_PREVIOUS_COMMIT"
-
-git -C "$PROJECT" reset --hard "$OLD_COMMIT"
-
-cd "$PROJECT/backend"
-npm ci --include=dev
-npm run build
-npm prune --omit=dev
-
-cd "$PROJECT/frontend"
-npm ci --include=dev
-npm run build
-rsync -a --delete dist/ /var/www/newdomofon-video/
-chown -R newdomofon:newdomofon /var/www/newdomofon-video
-
-systemctl restart newdomofon-video-backend.service
-systemctl restart newdomofon-smartyard-compat.service
-
-curl -fsS http://127.0.0.1:3000/api/health | jq
-```
-
-Если новая версия изменила schema/data, используйте соответствующий PostgreSQL dump.
+Не публикуйте backup: он содержит токены, пароли и database dump.
 
 ---
 
 # Диагностика
 
-## Backend не запускается
+## Сервисы
 
 ```bash
-systemctl status newdomofon-video-backend.service --no-pager -l
+systemctl --no-pager --full status \
+  newdomofon-video-backend.service \
+  newdomofon-smartyard-compat.service \
+  newdomofon-video-rtsp-gateway.service
+
 journalctl -u newdomofon-video-backend.service -n 300 --no-pager
+journalctl -u newdomofon-smartyard-compat.service -n 300 --no-pager
+journalctl -u newdomofon-video-rtsp-gateway.service -n 300 --no-pager
 ```
 
-Частые причины:
-
-- `JWT_SECRET` отсутствует или короче 32 символов;
-- `ADMIN_PASSWORD` короче 12 символов;
-- неверный `DATABASE_URL`;
-- PostgreSQL не запущен;
-- `app.env` недоступен пользователю `newdomofon`;
-- build `backend/dist/index.js` отсутствует.
-
-Проверка env без вывода secrets:
+## Preview 502
 
 ```bash
-sudo -u newdomofon bash -c '
-set -a
-. /etc/newdomofon-video/app.env
-set +a
-printf "DATABASE_URL=%s\n" "$([ -n "${DATABASE_URL:-}" ] && echo configured || echo missing)"
-printf "JWT_SECRET_LENGTH=%s\n" "${#JWT_SECRET}"
-printf "ADMIN_PASSWORD_LENGTH=%s\n" "${#ADMIN_PASSWORD}"
-'
+SMARTYARD_URL='https://video.example.com/stream/?token=...' \
+  bash /opt/newdomofon-video-master/scripts/diagnose-smartyard-preview.sh
 ```
 
-## SmartYard preview возвращает 502
+## RTSP не открывается
 
 ```bash
-journalctl \
-  -u newdomofon-smartyard-compat.service \
-  --since '15 minutes ago' \
-  --no-pager | tail -300
-
-curl -fsS http://127.0.0.1:3082/health | jq
-ss -ltnp | grep -E ':(3082|3083|3084|3085)([[:space:]]|$)'
+ss -lntp | grep ':8554'
+systemctl is-active newdomofon-video-rtsp-gateway.service
+grep '^RTSP_PUBLIC_URL_TEMPLATE=' /etc/newdomofon-video/app.env
+journalctl -u newdomofon-video-rtsp-gateway.service --since "15 minutes ago" --no-pager
 ```
 
-Возможные причины:
+Во внешнем firewall/NAT должен быть разрешён TCP `8554`.
 
-- node offline;
-- node не имеет media secret;
-- камера не назначена node;
-- на node нет playable archive range;
-- node не обновлена до версии, где `camera` scope разрешает preview MP4 export;
-- internal secret master/gateway не совпадает.
-
-## Live возвращает 404
-
-Если ответ:
-
-```json
-{"error":"Live playlist is not ready","recording":false}
-```
-
-маршрут и token работают, но FFmpeg recorder на node не создал `live.m3u8`. Проверяйте node status и journal, а не Nginx master.
-
-## Events возвращают HTML вместо JSON
-
-Проверьте, что event `location` расположен до SPA fallback:
-
-```bash
-nginx -T 2>/dev/null \
-  | grep -n -A25 -B2 'events_summary'
-```
-
-Ответ должен иметь:
-
-```text
-content-type: application/json
-access-control-allow-origin: *
-x-newdomofon-smartyard-route: node-events
-```
-
-## HTTP 507
+## Disk guard
 
 ```bash
 cat /run/newdomofon-video/master-disk-state.json | jq
-df -hT /
-df -ih /
-journalctl --disk-usage
+test ! -e /run/newdomofon-video/master-disk-critical
 ```
 
-Освободите место безопасно. Не удаляйте PostgreSQL data files вручную.
-
-## Node offline
-
-```bash
-set -a
-. /etc/newdomofon-video/app.env
-set +a
-
-psql "$DATABASE_URL" -P pager=off -c '
-SELECT name,status,last_seen_at,internal_url,public_base_url,config_generation
-FROM dvr_servers
-ORDER BY name;
-'
-```
-
-На node проверьте `DVR_NODE_ID`, `DVR_NODE_TOKEN`, DNS master и время.
-
-## Полезные журналы
-
-```bash
-journalctl -u newdomofon-video-backend.service -n 300 --no-pager
-journalctl -u newdomofon-public-events-proxy.service -n 200 --no-pager
-journalctl -u newdomofon-smartyard-compat.service -n 300 --no-pager
-journalctl -u newdomofon-video-master-disk-guard.service -n 200 --no-pager
-```
+При critical backend может переходить в read-only и возвращать HTTP `507` для изменяющих запросов.
 
 ---
 
 # Безопасность
 
-- Используйте TLS на master и всех публичных node.
-- Ограничьте SSH административными IP и используйте ключи.
-- Не публикуйте `app.env`, bootstrap JSON, database dumps и media token.
-- Не храните token в shell history на shared server.
-- PostgreSQL должен слушать localhost/private network.
-- Порты `3000`, `3057`, `3082–3085` не должны быть публичными.
-- `NODE_REGISTRATION_TOKEN`, agent token и media secret должны быть уникальны.
-- Используйте отдельный `MANAGED_CAMERA_TOKEN_SECRET`, не равный `JWT_SECRET`.
-- После утечки managed token ротируйте его в администрировании.
-- После утечки node media secret ротируйте node credentials и обновите node env.
-- После утечки RTSP/ONVIF credentials смените пароль камеры.
-- Не публикуйте HAR и browser logs с полными camera links.
-- Не включайте raw event payload без необходимости.
-- Регулярно проверяйте backup restore, disk guard и Certbot renewal.
+- не публикуйте `app.env`;
+- не выводите токены в общие логи и чаты;
+- ограничьте PostgreSQL loopback/private network;
+- порт node `3010` разрешайте только master;
+- RTSP `8554` ограничьте VPN или доверенными IP;
+- обычный RTSP не шифрует credentials и media;
+- регулярно ротируйте admin password, node agent token, node media secret и managed tokens;
+- после публикации токена в открытом канале выполните rotation;
+- храните backups с `chmod 0600/0750`;
+- не запускайте `npm audit fix` автоматически на production без проверки diff.
 
 ---
 
-# Добавление второй и последующих node
-
-Для каждой node:
-
-1. создайте отдельную запись на master;
-2. получите отдельные `node_id`, `agent_token`, `media_secret`;
-3. используйте отдельный private/internal URL;
-4. при необходимости используйте отдельный public DNS URL;
-5. установите node из отдельного node repository;
-6. назначьте только её камеры;
-7. проверьте heartbeat, live, archive, events и preview;
-8. не копируйте credentials другой node.
-
-SmartYard gateway сам определяет node по назначению камеры. Override `DVR_ENGINE_URL` на одну удалённую node для современной multi-node схемы не требуется.
-
----
-
-# Разработка и разделение репозиториев
-
-Control plane изменяется только в:
+## Актуальные production-компоненты
 
 ```text
-https://github.com/rirodevdom/newdomofon-video-master
+Master backend + PostgreSQL
+Device-owned camera placement
+Automatic node heartbeat/config generation
+Managed camera tokens many-to-many
+Administration → Links
+HLS / MPEG-TS / DASH / JPEG / preview / archive / events
+Automatic MediaMTX RTSP gateway
+Master/node disk guards
+Node-local SQLite events
+Archive/event lifecycle synchronizer
 ```
-
-Data plane изменяется только в:
-
-```text
-https://github.com/rirodevdom/newdomofon-video-node
-```
-
-Правила:
-
-- не копировать node recorder в master;
-- не подключать node к PostgreSQL master;
-- не хранить события камер на master;
-- не делать общий production checkout;
-- общими считать только versioned contracts;
-- сначала сохранять backward compatibility, затем обновлять node;
-- удалять legacy endpoint только отдельным major change.
-
-Старый объединённый monorepo не является источником production-кода.
