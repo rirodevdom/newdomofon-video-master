@@ -6,8 +6,8 @@ Wants=network-online.target newdomofon-video-backend.service
 
 [Service]
 Type=simple
-User=newdomofon
-Group=newdomofon
+User=root
+Group=root
 WorkingDirectory=/opt/newdomofon-video-master/smartyard-compat-proxy
 EnvironmentFile=/etc/newdomofon-video/app.env
 Environment=NODE_ENV=production

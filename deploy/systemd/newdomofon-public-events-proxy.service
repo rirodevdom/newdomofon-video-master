@@ -7,8 +7,8 @@ Requires=postgresql.service
 
 [Service]
 Type=simple
-User=newdomofon
-Group=newdomofon
+User=root
+Group=root
 WorkingDirectory=/opt/newdomofon-video-master/public-events-proxy
 EnvironmentFile=/etc/newdomofon-video/app.env
 Environment=NODE_ENV=production
