@@ -20,8 +20,10 @@ done
 
 PATCHER="$PROJECT_DIR/scripts/patch-manual-auto-managed-tokens.py"
 COLLISION_FIX="$PROJECT_DIR/scripts/fix-manual-token-resolver-variable.py"
+MEDIA_PATCHER="$PROJECT_DIR/scripts/patch-managed-media-gateway.py"
 [[ -f "$PATCHER" ]] || fail "Feature patcher is missing: $PATCHER"
 [[ -f "$COLLISION_FIX" ]] || fail "Resolver collision fix is missing: $COLLISION_FIX"
+[[ -f "$MEDIA_PATCHER" ]] || fail "Managed media patcher is missing: $MEDIA_PATCHER"
 [[ -f "$PROJECT_DIR/backend/migrations/094_manual_auto_managed_camera_tokens.sql" ]] \
   || fail "Migration 094 is missing"
 [[ -f "$PROJECT_DIR/backend/src/services/manualManagedCameraToken.ts" ]] \
@@ -33,6 +35,7 @@ cp -a "$PROJECT_DIR/backend/src/routes/managedCameraTokens.ts" "$BACKUP_ROOT/man
 cp -a "$PROJECT_DIR/backend/src/routes/internalSmartYard.ts" "$BACKUP_ROOT/internalSmartYard.ts.before"
 cp -a "$PROJECT_DIR/backend/src/routes/managedAdminPlayer.ts" "$BACKUP_ROOT/managedAdminPlayer.ts.before"
 cp -a "$PROJECT_DIR/frontend/src/views/AdminView.vue" "$BACKUP_ROOT/AdminView.vue.before"
+cp -a "$PROJECT_DIR/frontend/src/views/PlayerView.vue" "$BACKUP_ROOT/PlayerView.vue.before"
 
 set -a
 # shellcheck disable=SC1090
@@ -43,11 +46,12 @@ set +a
 log "Backing up PostgreSQL"
 pg_dump -Fc "$DATABASE_URL" >"$BACKUP_ROOT/postgresql.dump"
 
-log "Checking and applying source patch"
-python3 -m py_compile "$PATCHER" "$COLLISION_FIX"
+log "Checking and applying source patches"
+python3 -m py_compile "$PATCHER" "$COLLISION_FIX" "$MEDIA_PATCHER"
 python3 "$COLLISION_FIX" --project-dir "$PROJECT_DIR"
 python3 "$PATCHER" --project-dir "$PROJECT_DIR"
 python3 "$COLLISION_FIX" --project-dir "$PROJECT_DIR"
+python3 "$MEDIA_PATCHER" --project-dir "$PROJECT_DIR"
 
 log "Building and migrating backend"
 cd "$PROJECT_DIR/backend"
