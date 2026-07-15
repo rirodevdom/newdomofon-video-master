@@ -30,16 +30,14 @@ text = path.read_text(encoding="utf-8")
 managed_start = "# BEGIN NEWDOMOFON MANAGED CAMERA MEDIA GATEWAY"
 managed_end = "# END NEWDOMOFON MANAGED CAMERA MEDIA GATEWAY"
 
-# Remove previously generated node-direct and managed gateway blocks first.
-for start, end in [
-    ("# BEGIN NEWDOMOFON NODE MEDIA PROXY", "# END NEWDOMOFON NODE MEDIA PROXY"),
-    (managed_start, managed_end),
-]:
-    text = re.sub(
-        rf"\n?\s*{re.escape(start)}\n[\s\S]*?\n\s*{re.escape(end)}\n?",
-        "\n",
-        text,
-    )
+# Remove only a previous managed gateway block. Keep the historical generated
+# wrapper because it may still contain working /files/ and /device-archive/
+# routes; the obsolete camera sub-location inside it is removed below.
+text = re.sub(
+    rf"\n?\s*{re.escape(managed_start)}\n[\s\S]*?\n\s*{re.escape(managed_end)}\n?",
+    "\n",
+    text,
+)
 
 
 def iter_location_blocks(src: str):
@@ -89,11 +87,11 @@ def iter_location_blocks(src: str):
 # Remove any historical /cameras/ location that still proxies directly to a
 # DVR/node instead of the managed-token gateway on 127.0.0.1:3082.
 remove_ranges = []
-for start, end, block in iter_location_blocks(text):
-    header = block.split("{", 1)[0]
+for start, end, location_block in iter_location_blocks(text):
+    header = location_block.split("{", 1)[0]
     if "/cameras/" not in header:
         continue
-    proxy_targets = re.findall(r"proxy_pass\s+([^;]+);", block)
+    proxy_targets = re.findall(r"proxy_pass\s+([^;]+);", location_block)
     if proxy_targets and any("127.0.0.1:3082" not in target for target in proxy_targets):
         remove_ranges.append((start, end))
 
@@ -132,9 +130,8 @@ block = r'''    # BEGIN NEWDOMOFON MANAGED CAMERA MEDIA GATEWAY
 
 '''
 
-# Put the precise camera-media route before the other regex locations. Regex
-# locations are evaluated in declaration order, so this prevents a stale direct
-# node route from winning before the generic SmartYard media route.
+# Regex locations are evaluated in declaration order. Insert this precise route
+# before every remaining regex location so no stale direct node route can win.
 match = re.search(r"(?m)^\s*location\s+~", text)
 if match:
     text = text[:match.start()] + block + text[match.start():]
@@ -160,20 +157,25 @@ import re
 import sys
 
 text = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
-managed = re.search(
-    r"location\s+~\s+\^/cameras/\[\^/\]\+/[\s\S]*?proxy_pass\s+http://127\.0\.0\.1:3082;",
-    text,
-)
-if not managed:
-    raise SystemExit("Managed /cameras/<stream>/ media route to 127.0.0.1:3082 was not found")
+if "# BEGIN NEWDOMOFON MANAGED CAMERA MEDIA GATEWAY" not in text:
+    raise SystemExit("Managed camera media gateway marker was not found")
 
-for block in re.findall(r"location\b[^\{]*\{[\s\S]*?\n\s*\}", text):
-    header = block.split("{", 1)[0]
-    if "/cameras/" not in header:
-        continue
-    targets = re.findall(r"proxy_pass\s+([^;]+);", block)
-    if any("127.0.0.1:3082" not in target for target in targets):
-        raise SystemExit(f"Direct camera proxy still present: {header.strip()} -> {targets}")
+managed_section = text.split("# BEGIN NEWDOMOFON MANAGED CAMERA MEDIA GATEWAY", 1)[1].split(
+    "# END NEWDOMOFON MANAGED CAMERA MEDIA GATEWAY", 1
+)[0]
+if "proxy_pass http://127.0.0.1:3082;" not in managed_section:
+    raise SystemExit("Managed /cameras/<stream>/ route is not using 127.0.0.1:3082")
+
+# A direct camera route to the node is the exact regression this repair removes.
+for match in re.finditer(r"location\b[^\n{]*/cameras/[^\n{]*\{", text):
+    start = match.start()
+    end = text.find("\n    }", start)
+    if end < 0:
+        end = min(len(text), start + 5000)
+    snippet = text[start:end]
+    targets = re.findall(r"proxy_pass\s+([^;]+);", snippet)
+    if targets and any("127.0.0.1:3082" not in target for target in targets):
+        raise SystemExit(f"Direct camera proxy still present: {targets}")
 PY
 
 curl -fsS --max-time 3 http://127.0.0.1:3082/health >"$BACKUP_DIR/gateway-health.json" \
