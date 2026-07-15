@@ -10,8 +10,8 @@
 
     <v-alert type="info" variant="tonal" class="mb-4">
       Credentials создаются вручную при развёртывании node. При добавлении на master укажите те же
-      <code>DVR_NODE_ID</code>, <code>DVR_NODE_TOKEN</code> и <code>DVR_NODE_MEDIA_SECRET</code>.
-      Master больше не генерирует эти значения.
+      <code>DVR_MASTER_URL</code>, <code>DVR_NODE_ID</code>, <code>DVR_NODE_TOKEN</code> и
+      <code>DVR_NODE_MEDIA_SECRET</code>. Master больше не генерирует эти значения.
     </v-alert>
 
     <v-alert v-if="message" :type="messageType" variant="tonal" class="mb-4" closable @click:close="message = ''">{{ message }}</v-alert>
@@ -77,7 +77,7 @@
           <v-row>
             <v-col cols="12" md="6"><v-text-field v-model="form.name" label="Название node" /></v-col>
             <v-col cols="12" md="6"><v-switch v-model="form.is_enabled" color="primary" label="Активна" /></v-col>
-            <v-col cols="12"><v-text-field :model-value="masterUrl" label="DVR_MASTER_URL (этот master)" readonly /></v-col>
+            <v-col cols="12"><v-text-field v-model="form.master_url" label="DVR_MASTER_URL" placeholder="https://new-video.domofon-37.ru" /></v-col>
             <v-col cols="12"><v-text-field v-model="form.node_id" label="DVR_NODE_ID" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autocomplete="off" /></v-col>
             <v-col cols="12"><v-text-field v-model="form.agent_token" label="DVR_NODE_TOKEN" type="password" autocomplete="new-password" /></v-col>
             <v-col cols="12"><v-text-field v-model="form.media_secret" label="DVR_NODE_MEDIA_SECRET" type="password" autocomplete="new-password" /></v-col>
@@ -132,11 +132,11 @@ const rotateDialog = ref(false);
 const saving = ref(false);
 const rotating = ref(false);
 const rotationTarget = ref<any | null>(null);
-const masterUrl = window.location.origin;
 
 function blankCreateForm() {
   return {
     name: 'Node 1',
+    master_url: window.location.origin,
     node_id: '',
     agent_token: '',
     media_secret: '',
@@ -151,6 +151,7 @@ const rotationForm = reactive({ agent_token: '', media_secret: '' });
 
 const canCreate = computed(() => Boolean(
   form.name.trim() &&
+  form.master_url.trim() &&
   form.node_id.trim() &&
   form.agent_token.trim().length >= 16 &&
   form.media_secret.trim().length >= 16 &&
@@ -245,6 +246,7 @@ async function createNode() {
     await api.post('/dvr-servers', {
       ...form,
       name: form.name.trim(),
+      master_url: form.master_url.trim(),
       node_id: form.node_id.trim(),
       agent_token: form.agent_token.trim(),
       media_secret: form.media_secret.trim(),
