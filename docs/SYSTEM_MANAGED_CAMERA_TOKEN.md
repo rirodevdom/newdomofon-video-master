@@ -38,7 +38,7 @@ Managed token никогда не передаётся video node напряму
 scripts/apply-managed-token-rollout.sh
 ```
 
-После публикации изменений в `main` сначала обновите node, затем master.
+После публикации изменений в `main` сначала обновите node, затем master. На обоих серверах скачайте свежую копию сценария отдельно: он сам сохранит локальные изменения checkout в stash и переключит repository на нужную ветку.
 
 На `video-node1`:
 
@@ -53,12 +53,11 @@ bash /root/apply-managed-token-rollout.sh node
 На `video-master`:
 
 ```bash
-cd /opt/newdomofon-video-master
-git fetch origin main
-git switch main
-git pull --ff-only origin main
-chmod 700 scripts/apply-managed-token-rollout.sh
-bash scripts/apply-managed-token-rollout.sh master
+curl -fsSL \
+  https://raw.githubusercontent.com/rirodevdom/newdomofon-video-master/main/scripts/apply-managed-token-rollout.sh \
+  -o /root/apply-managed-token-rollout.sh
+chmod 700 /root/apply-managed-token-rollout.sh
+bash /root/apply-managed-token-rollout.sh master
 ```
 
 Скрипт:
@@ -73,11 +72,15 @@ bash scripts/apply-managed-token-rollout.sh master
 - перезапускает сервисы;
 - проверяет health и SQL-инвариант «одна камера — один токен».
 
-Для проверки рабочей ветки до merge задайте на master:
+Для проверки рабочей ветки до merge скачайте сценарий из ветки и задайте `TARGET_REF`:
 
 ```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/rirodevdom/newdomofon-video-master/agent/system-managed-camera-token/scripts/apply-managed-token-rollout.sh \
+  -o /root/apply-managed-token-rollout.sh
+chmod 700 /root/apply-managed-token-rollout.sh
 TARGET_REF=agent/system-managed-camera-token \
-  bash scripts/apply-managed-token-rollout.sh master
+  bash /root/apply-managed-token-rollout.sh master
 ```
 
 Node repository не содержит логики внешних managed tokens: node принимает только короткоживущий внутренний токен, выпущенный master. Поэтому функциональная правка находится на master, а node-часть rollout выполняет безопасное обновление и health-check совместимой node.
