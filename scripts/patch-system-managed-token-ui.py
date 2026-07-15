@@ -18,6 +18,8 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
 
 def patch_devices_view(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
+    if SYSTEM_TOKEN_ID in text and "managed_token_id" in text and "normalizeStreamName" in text:
+        return
 
     text = replace_once(
         text,
@@ -218,6 +220,8 @@ async function load() {
 
 def patch_admin_links(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
+    if "У камеры всегда один текущий токен" in text and "Заменить текущий токен" in text:
+        return
     replacements = [
         (
             "Нажмите на камеру, затем выберите один из уже привязанных токенов или добавьте новый. Ссылки формируются для конкретной пары «камера + токен». HLS, MPEG-TS, DASH и JPEG работают через HTTPS gateway. RTSP показывается только когда на сервере настроен публичный RTSP gateway.",
