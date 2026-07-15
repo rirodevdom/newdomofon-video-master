@@ -8,9 +8,10 @@
       <v-btn v-if="auth.isAdmin" color="primary" prepend-icon="mdi-plus" @click="openCreate">Создать node</v-btn>
     </div>
 
-    <v-alert v-if="createdNode" type="success" variant="tonal" class="mb-4">
-      <div class="font-weight-bold mb-2">Сохраните эти значения. Повторно token показан не будет.</div>
-      <pre>{{ nodeEnv }}</pre>
+    <v-alert type="info" variant="tonal" class="mb-4">
+      Credentials создаются вручную при развёртывании node. При добавлении на master укажите те же
+      <code>DVR_MASTER_URL</code>, <code>DVR_NODE_ID</code>, <code>DVR_NODE_TOKEN</code> и
+      <code>DVR_NODE_MEDIA_SECRET</code>. Master больше не генерирует эти значения.
     </v-alert>
 
     <v-alert v-if="message" :type="messageType" variant="tonal" class="mb-4" closable @click:close="message = ''">{{ message }}</v-alert>
@@ -51,7 +52,7 @@
                   <v-list-item title="Перезагрузить конфиг" @click="sendCommand(node, 'reload_cameras')" />
                   <v-list-item title="Перезапустить записи" @click="sendCommand(node, 'restart_recordings')" />
                   <v-list-item title="Проверить подключение" @click="sendCommand(node, 'health_check')" />
-                  <v-list-item v-if="auth.user?.role === 'super_admin'" title="Ротировать token" @click="rotate(node)" />
+                  <v-list-item v-if="auth.user?.role === 'super_admin'" title="Задать новые credentials" @click="openRotate(node)" />
                   <v-list-item title="Отключить node" @click="disable(node)" />
                   <v-list-item v-if="auth.user?.role === 'super_admin'" title="Удалить node" @click="remove(node)" />
                 </v-list>
@@ -65,21 +66,49 @@
       </v-table>
     </v-card>
 
-    <v-dialog v-model="dialog" max-width="760">
+    <v-dialog v-model="dialog" max-width="900">
       <v-card>
-        <v-card-title>Создание video node</v-card-title>
+        <v-card-title>Добавление заранее развёрнутой video node</v-card-title>
         <v-card-text>
+          <v-alert type="warning" variant="tonal" class="mb-4">
+            Скопируйте значения из <code>/root/newdomofon-node-master-registration.env</code> на node.
+            Значения должны полностью совпадать с её <code>/etc/newdomofon-video/app.env</code>.
+          </v-alert>
           <v-row>
             <v-col cols="12" md="6"><v-text-field v-model="form.name" label="Название node" /></v-col>
             <v-col cols="12" md="6"><v-switch v-model="form.is_enabled" color="primary" label="Активна" /></v-col>
-            <v-col cols="12"><v-text-field v-model="form.public_base_url" label="Public base URL" /></v-col>
-            <v-col cols="12"><v-text-field v-model="form.internal_url" label="Internal URL" /></v-col>
+            <v-col cols="12"><v-text-field v-model="form.master_url" label="DVR_MASTER_URL" placeholder="https://new-video.domofon-37.ru" /></v-col>
+            <v-col cols="12"><v-text-field v-model="form.node_id" label="DVR_NODE_ID" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autocomplete="off" /></v-col>
+            <v-col cols="12"><v-text-field v-model="form.agent_token" label="DVR_NODE_TOKEN" type="password" autocomplete="new-password" /></v-col>
+            <v-col cols="12"><v-text-field v-model="form.media_secret" label="DVR_NODE_MEDIA_SECRET" type="password" autocomplete="new-password" /></v-col>
+            <v-col cols="12" md="6"><v-text-field v-model="form.public_base_url" label="DVR_NODE_PUBLIC_BASE_URL" placeholder="http://10.106.1.31" /></v-col>
+            <v-col cols="12" md="6"><v-text-field v-model="form.internal_url" label="DVR_NODE_INTERNAL_URL" placeholder="http://10.106.1.31:3010" /></v-col>
           </v-row>
         </v-card-text>
         <v-card-actions>
           <v-spacer />
           <v-btn variant="tonal" @click="dialog = false">Отмена</v-btn>
-          <v-btn color="primary" :loading="saving" @click="createNode">Создать</v-btn>
+          <v-btn color="primary" :loading="saving" :disabled="!canCreate" @click="createNode">Создать</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
+    <v-dialog v-model="rotateDialog" max-width="720">
+      <v-card>
+        <v-card-title>Задать новые credentials</v-card-title>
+        <v-card-text>
+          <v-alert type="warning" variant="tonal" class="mb-4">
+            Сначала внесите такие же новые значения в <code>/etc/newdomofon-video/app.env</code> на node,
+            затем сохраните их здесь и перезапустите DVR-сервис node.
+          </v-alert>
+          <div class="mb-4 font-weight-medium">{{ rotationTarget?.name || '' }}</div>
+          <v-text-field v-model="rotationForm.agent_token" label="Новый DVR_NODE_TOKEN" type="password" autocomplete="new-password" />
+          <v-text-field v-model="rotationForm.media_secret" label="Новый DVR_NODE_MEDIA_SECRET" type="password" autocomplete="new-password" />
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="tonal" @click="rotateDialog = false">Отмена</v-btn>
+          <v-btn color="primary" :loading="rotating" :disabled="!canRotate" @click="rotateCredentials">Сохранить</v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>
@@ -99,9 +128,42 @@ const statusFilters = ['all', 'online', 'warning', 'offline'];
 const message = ref('');
 const messageType = ref<'success' | 'error'>('success');
 const dialog = ref(false);
+const rotateDialog = ref(false);
 const saving = ref(false);
-const createdNode = ref<any | null>(null);
-const form = reactive({ name: 'Node 1', public_base_url: '', internal_url: 'http://127.0.0.1:3010', is_enabled: true });
+const rotating = ref(false);
+const rotationTarget = ref<any | null>(null);
+
+function blankCreateForm() {
+  return {
+    name: 'Node 1',
+    master_url: window.location.origin,
+    node_id: '',
+    agent_token: '',
+    media_secret: '',
+    public_base_url: '',
+    internal_url: '',
+    is_enabled: true
+  };
+}
+
+const form = reactive(blankCreateForm());
+const rotationForm = reactive({ agent_token: '', media_secret: '' });
+
+const canCreate = computed(() => Boolean(
+  form.name.trim() &&
+  form.master_url.trim() &&
+  form.node_id.trim() &&
+  form.agent_token.trim().length >= 16 &&
+  form.media_secret.trim().length >= 16 &&
+  form.public_base_url.trim() &&
+  form.internal_url.trim()
+));
+
+const canRotate = computed(() => Boolean(
+  rotationTarget.value &&
+  rotationForm.agent_token.trim().length >= 16 &&
+  rotationForm.media_secret.trim().length >= 16
+));
 
 const filteredNodes = computed(() => {
   const needle = search.value.trim().toLowerCase();
@@ -111,19 +173,6 @@ const filteredNodes = computed(() => {
     const textOk = !needle || [node.name, node.public_base_url, node.base_url, node.internal_url, health].some((value) => String(value || '').toLowerCase().includes(needle));
     return statusOk && textOk;
   });
-});
-
-const nodeEnv = computed(() => {
-  if (!createdNode.value) return '';
-  const masterUrl = window.location.origin;
-  return [
-    `DVR_MASTER_URL=${masterUrl}`,
-    `DVR_NODE_ID=${createdNode.value.node_id || createdNode.value.id}`,
-    `DVR_NODE_TOKEN=${createdNode.value.agent_token || ''}`,
-    `DVR_NODE_MEDIA_SECRET=${createdNode.value.media_secret || ''}`,
-    `DVR_NODE_PUBLIC_BASE_URL=${form.public_base_url}`,
-    'DVR_REQUIRE_MEDIA_TOKEN=true'
-  ].join('\n');
 });
 
 function notify(text: string, type: 'success' | 'error' = 'success') {
@@ -187,17 +236,26 @@ async function load() {
 }
 
 function openCreate() {
-  createdNode.value = null;
+  Object.assign(form, blankCreateForm());
   dialog.value = true;
 }
 
 async function createNode() {
   saving.value = true;
   try {
-    const { data } = await api.post('/dvr-servers', form);
-    createdNode.value = data;
+    await api.post('/dvr-servers', {
+      ...form,
+      name: form.name.trim(),
+      master_url: form.master_url.trim(),
+      node_id: form.node_id.trim(),
+      agent_token: form.agent_token.trim(),
+      media_secret: form.media_secret.trim(),
+      public_base_url: form.public_base_url.trim(),
+      internal_url: form.internal_url.trim()
+    });
     dialog.value = false;
-    notify('Node создана');
+    notify('Node создана с credentials, заданными при её развёртывании');
+    Object.assign(form, blankCreateForm());
     await load();
   } catch (err: any) {
     notify(err.response?.data?.error || err.message || 'Ошибка создания node', 'error');
@@ -211,11 +269,29 @@ async function sendCommand(node: any, type: string) {
   notify(`Команда отправлена: ${type}`);
 }
 
-async function rotate(node: any) {
-  const { data } = await api.post(`/dvr-servers/${node.id}/rotate-token`, {});
-  createdNode.value = data;
-  form.public_base_url = node.public_base_url || node.base_url || '';
-  notify('Token node ротирован');
+function openRotate(node: any) {
+  rotationTarget.value = node;
+  Object.assign(rotationForm, { agent_token: '', media_secret: '' });
+  rotateDialog.value = true;
+}
+
+async function rotateCredentials() {
+  if (!rotationTarget.value) return;
+  rotating.value = true;
+  try {
+    await api.post(`/dvr-servers/${rotationTarget.value.id}/rotate-token`, {
+      agent_token: rotationForm.agent_token.trim(),
+      media_secret: rotationForm.media_secret.trim()
+    });
+    rotateDialog.value = false;
+    notify('Новые credentials сохранены. Перезапустите DVR-сервис node с теми же значениями.');
+    rotationTarget.value = null;
+    Object.assign(rotationForm, { agent_token: '', media_secret: '' });
+  } catch (err: any) {
+    notify(err.response?.data?.error || err.message || 'Ошибка обновления credentials', 'error');
+  } finally {
+    rotating.value = false;
+  }
 }
 
 async function disable(node: any) {

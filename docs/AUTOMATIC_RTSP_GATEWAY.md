@@ -1,60 +1,95 @@
 # Automatic RTSP gateway
 
-NewDomofon Video can publish every assigned camera through a single RTSP endpoint on the master without manually writing `RTSP_PUBLIC_URL_TEMPLATE` and without opening a second RTSP connection to the camera.
+NewDomofon Video публикует назначенные камеры через единый RTSP endpoint master. MediaMTX запускает relay только при подключении клиента.
 
-## Architecture
+Полный справочник `.env`: [ENVIRONMENT.md](ENVIRONMENT.md#5-rtsp-gateway--mediamtx).
+
+## Архитектура
 
 ```text
 RTSP client
-  -> rtsp://token:<managed-token>@master.example.com:8554/<stream>
-  -> MediaMTX on master
-  -> HTTP auth request to master backend
-  -> managed-token + camera assignment validation
-  -> runOnDemand starts FFmpeg only for the requested stream
-  -> backend resolves the camera's currently assigned video node
-  -> video node returns one continuous authenticated MPEG-TS response
-  -> FFmpeg republishes the stream into MediaMTX
-  -> MediaMTX serves RTSP readers
+  → rtsp://token:<managed-token>@master:8554/<stream>
+  → MediaMTX на master
+  → HTTP auth в backend
+  → проверка managed token и camera assignment
+  → runOnDemand запускает FFmpeg relay
+  → backend определяет назначенную video node
+  → node отдаёт authenticated MPEG-TS
+  → FFmpeg публикует stream в MediaMTX
+  → MediaMTX обслуживает RTSP reader
 ```
 
-The relay is on demand. When the last RTSP reader disconnects, MediaMTX terminates FFmpeg after the configured close delay. The original camera/NVR is still opened only by the recorder on its assigned video node.
+Relay останавливается после отключения последнего reader. Camera/NVR не получает дополнительное постоянное соединение от master: source берётся с назначенной node.
 
 ## Authentication
 
-A generated link embeds the existing managed camera token as the RTSP password:
+Внешний RTSP URL использует managed camera token как password:
 
 ```text
-rtsp://token:m1.EXAMPLE@video.example.com:8554/CameraStream
+rtsp://token:m1.EXAMPLE@video.example.com:8554/entrance_main
 ```
 
-MediaMTX delegates every RTSP `read` request to:
+MediaMTX вызывает loopback endpoint:
 
 ```text
 POST http://127.0.0.1:3000/api/internal/rtsp/auth
 ```
 
-The backend accepts access only when all conditions are true:
+Backend разрешает read только если:
 
-- the compact or legacy managed token signature is valid;
-- the token is active and not expired;
-- the token has the `camera` scope;
-- the token is assigned to the requested camera;
-- the camera and its inherited video node are enabled;
-- the call originates from the local MediaMTX process and contains the generated gateway secret.
+- managed token валиден, активен и не истёк;
+- token имеет scope `camera`;
+- token назначен requested camera;
+- camera и её node включены;
+- запрос пришёл от локального MediaMTX;
+- указан правильный `RTSP_GATEWAY_SHARED_SECRET`.
 
-Local FFmpeg publishing is authenticated independently with another generated secret and is allowed only from loopback.
+Local FFmpeg publisher использует отдельный `RTSP_RELAY_PUBLISH_SECRET` и разрешён только с loopback.
 
-## Automatic installation
+## Переменные `.env`
 
-The regular master deploy installs the gateway by default:
+```env
+# Включён ли gateway.
+RTSP_GATEWAY_ENABLED=true
+
+# DNS/IP, который выдаётся клиентам.
+RTSP_PUBLIC_HOST=video.example.com
+
+# Public/listen TCP port. Ports ниже 1024 не поддерживаются service user.
+RTSP_PUBLIC_PORT=8554
+
+# Шаблон внешней ссылки. Обычно создаётся installer автоматически.
+RTSP_PUBLIC_URL_TEMPLATE=rtsp://token:{token}@video.example.com:8554/{stream}
+
+# Internal backend ↔ MediaMTX secret. Генерируется installer.
+RTSP_GATEWAY_SHARED_SECRET=...
+
+# Internal local FFmpeg publisher secret. Генерируется installer.
+RTSP_RELAY_PUBLISH_SECRET=...
+
+# Автоматически открыть port в UFW/firewalld, если firewall уже активен.
+RTSP_AUTO_OPEN_FIREWALL=true
+
+# Зафиксированная MediaMTX version; пусто — определить поддерживаемую версию.
+RTSP_MEDIAMTX_VERSION=
+```
+
+Не публикуйте два internal secret.
+
+## Автоматическая установка
+
+Обычный master deploy:
 
 ```bash
+cd /opt/newdomofon-video-master
+
 PROJECT_DIR=/opt/newdomofon-video-master \
 ENV_FILE=/etc/newdomofon-video/app.env \
+INSTALL_RTSP_GATEWAY=1 \
   bash scripts/deploy-master.sh
 ```
 
-For an existing production master:
+На существующем master:
 
 ```bash
 cd /opt/newdomofon-video-master
@@ -64,49 +99,78 @@ ENV_FILE=/etc/newdomofon-video/app.env \
   bash scripts/install-rtsp-gateway.sh
 ```
 
-The installer performs these actions:
+Installer:
 
-1. derives the public master hostname from `SMARTYARD_PUBLIC_BASE_URL`, `APP_PUBLIC_URL`, `PUBLIC_BACKEND_BASE_URL`, or `CORS_ORIGIN`;
-2. generates `RTSP_GATEWAY_SHARED_SECRET` and `RTSP_RELAY_PUBLISH_SECRET`;
-3. creates `RTSP_PUBLIC_URL_TEMPLATE` automatically;
-4. resolves the latest MediaMTX release, unless `RTSP_MEDIAMTX_VERSION` is already pinned;
-5. downloads the correct Linux architecture archive and verifies SHA256;
-6. installs `/usr/local/bin/mediamtx`;
-7. installs the on-demand relay helper and systemd unit;
-8. renders `/etc/newdomofon-video/mediamtx.yml`;
-9. restarts backend and enables `newdomofon-video-rtsp-gateway.service`;
-10. opens the configured TCP port when active UFW or firewalld is detected.
+1. определяет public host из `SMARTYARD_PUBLIC_BASE_URL`, `APP_PUBLIC_URL`, `PUBLIC_BACKEND_BASE_URL` или `CORS_ORIGIN`;
+2. генерирует два internal secret, если они отсутствуют;
+3. создаёт `RTSP_PUBLIC_URL_TEMPLATE`;
+4. определяет/использует pinned MediaMTX version;
+5. скачивает package и проверяет checksum;
+6. устанавливает binary, config, relay helper и systemd unit;
+7. перезапускает backend и gateway;
+8. открывает TCP port в поддерживаемом активном firewall.
 
-Generated settings are stored in `/etc/newdomofon-video/app.env` with mode `0640` and are never returned by the public API.
+Сгенерированные значения сохраняются в `/etc/newdomofon-video/app.env` с ограниченными правами и не возвращаются public API.
 
-## Ports
+## Изменение public port
+
+Не добавляйте вторую строку через `>>`. Обновите существующую строку безопасно:
+
+```bash
+python3 - <<'PY'
+from pathlib import Path
+
+path = Path('/etc/newdomofon-video/app.env')
+key = 'RTSP_PUBLIC_PORT'
+value = '18554'
+lines = path.read_text(encoding='utf-8').splitlines()
+out = []
+written = False
+for line in lines:
+    if line.startswith(key + '='):
+        if not written:
+            out.append(f'{key}={value}')
+            written = True
+    else:
+        out.append(line)
+if not written:
+    out.append(f'{key}={value}')
+path.write_text('\n'.join(out) + '\n', encoding='utf-8')
+PY
+
+PROJECT_DIR=/opt/newdomofon-video-master \
+ENV_FILE=/etc/newdomofon-video/app.env \
+  bash /opt/newdomofon-video-master/scripts/install-rtsp-gateway.sh
+```
+
+Во внешнем firewall/NAT также откройте новый TCP port.
+
+## Порты
 
 ```text
 8554/tcp  public RTSP over TCP
-9997/tcp  MediaMTX API, bound to 127.0.0.1 only
+9997/tcp  MediaMTX API, только 127.0.0.1
 ```
 
-Only TCP transport is enabled. RTP/RTCP UDP port ranges are not required.
+Используется TCP transport; отдельный RTP/RTCP UDP range не требуется.
 
-Change the public/listen port before installation when needed:
-
-```bash
-printf '%s\n' 'RTSP_PUBLIC_PORT=18554' >> /etc/newdomofon-video/app.env
-```
-
-The service runs as `newdomofon`, therefore ports below 1024 are intentionally rejected.
-
-## Verification
+## Проверка
 
 ```bash
 systemctl status newdomofon-video-rtsp-gateway.service --no-pager -l
 ss -lntp | grep ':8554'
-curl -fsS http://127.0.0.1:9997/v3/config/global/get | jq .
+curl -fsS http://127.0.0.1:9997/v3/config/global/get | jq
 ```
 
-Open `Administration -> Links`, select a camera and one of its assigned managed tokens. RTSP must be marked available and generated without any manual template.
+В UI:
 
-Test with FFprobe:
+```text
+Администрирование → Ссылки → камера → managed token
+```
+
+RTSP должен отображаться доступным без ручного заполнения template.
+
+Проверка FFprobe без сохранения URL в shell history:
 
 ```bash
 read -rsp 'RTSP URL: ' RTSP_URL
@@ -117,33 +181,37 @@ timeout 20 ffprobe \
   -rtsp_transport tcp \
   -show_entries stream=index,codec_type,codec_name,width,height \
   -of json \
-  "$RTSP_URL" | jq .
+  "$RTSP_URL" | jq
+
+unset RTSP_URL
 ```
 
-Expected video codec is normally H.264 or H.265, depending on the source camera.
-
-## Logs
+## Логи
 
 Master RTSP gateway:
 
 ```bash
-journalctl -u newdomofon-video-rtsp-gateway.service --since '15 minutes ago' --no-pager
+journalctl -u newdomofon-video-rtsp-gateway.service --since '-15 minutes' --no-pager
 ```
 
-Master backend auth/source resolver:
+Backend auth/source resolver:
 
 ```bash
-journalctl -u newdomofon-video-backend.service --since '15 minutes ago' --no-pager \
+journalctl -u newdomofon-video-backend.service --since '-15 minutes' --no-pager \
   | grep -Ei 'internal/rtsp|rtsp-relay|error'
 ```
 
-Assigned video node relay source:
+Assigned node relay source:
 
 ```bash
-journalctl -u newdomofon-video-dvr.service --since '15 minutes ago' --no-pager \
+journalctl -u newdomofon-video-dvr.service --since '-15 minutes' --no-pager \
   | grep -Ei 'rtsp-relay|live-ts|error'
 ```
 
-## Security note
+## Порядок обновления
 
-Plain RTSP does not encrypt credentials or media. Restrict port 8554 to trusted networks/VPN when traffic crosses an untrusted network. Token rotation, disabling, expiry, and camera-token unassignment are enforced on the next RTSP connection. Existing established sessions can continue until disconnected because authentication occurs when the RTSP session is created.
+Сначала обновляйте все video node и проверяйте endpoint relay, затем master/MediaMTX.
+
+## Безопасность
+
+Plain RTSP не шифрует credentials или media. Ограничивайте public port VPN/allowlist. Rotation, disabling, expiry и unassignment применяются при следующем RTSP connection; уже установленная session может продолжать работать до disconnect.

@@ -1,82 +1,86 @@
-# NewDomofon Video Master: запуск приложения под root
+# Video Master: специальный root-only runtime
 
-Актуальный master deployment запускает все application-компоненты NewDomofon от системного пользователя `root`:
+Обычная production-установка из Git должна использовать systemd units и права, установленные `deploy-master.sh`. Root-only runtime применяется только для локальной установки из распакованного source tree через:
+
+```text
+scripts/install-master-manual-local-root.sh
+```
+
+Он нужен там, где production project намеренно хранится как root-only и application services должны работать от `root`.
+
+## Runtime users
+
+Root-only application services:
 
 ```text
 newdomofon-video-backend.service        root
 newdomofon-public-events-proxy.service  root
 newdomofon-smartyard-compat.service     root
 newdomofon-video-rtsp-gateway.service   root
-newdomofon-video-srs.service            root (если используется)
-newdomofon-video-master-disk-guard      root
+master disk guard                       root
 ```
 
-Системные инфраструктурные службы сохраняют штатных пользователей:
+Системные services сохраняют package accounts:
 
 ```text
 PostgreSQL server  postgres
 Nginx worker       www-data
 ```
 
-PostgreSQL role `newdomofon` — это пользователь базы данных, а не Linux runtime-пользователь приложения.
+PostgreSQL role `newdomofon` — database user, а не Linux runtime user.
 
-## Почему введён root runtime
+## Когда root-only режим нужен
 
-Установка из локального ZIP или распакованной папки работает с `umask 077` и временным root-only Git source. При запуске Node.js от отдельного Linux-пользователя production checkout мог оказаться недоступным, что приводило к:
+- source доставляется archive и распаковывается в `/root`;
+- Git не используется;
+- project tree намеренно имеет `root:root 0700`;
+- требуется единый монолитный installer без отдельного Linux application user.
+
+Для обычного сетевого production-развёртывания предпочтительнее стандартный deploy и ограниченный runtime user.
+
+## Project и environment
 
 ```text
-status=200/CHDIR
-Changing to the requested working directory failed: Permission denied
-```
-
-В root runtime проект хранится как:
-
-```text
+/opt/newdomofon-video-master
 owner: root:root
-mode:  0700 для корня проекта
+mode: 0700
 ```
-
-Sensitive environment:
 
 ```text
 /etc/newdomofon-video/app.env
 owner: root:root
-mode:  0600
+mode: 0600
 ```
 
 Frontend остаётся читаемым Nginx:
 
 ```text
 /var/www/newdomofon-video
+owner: root:root
 directories: 0755
-files:       0644
-owner:       root:root
+files: 0644
 ```
 
-## Новая установка
+## Node registration в root-only master
 
-Запускайте directory/archive installer от root. `deploy-master.sh` автоматически устанавливает root units и нормализует права до запуска systemd.
+Root-only wrapper принудительно отключает legacy self-registration:
 
-## Перевод существующего master
+```text
+NODE_REGISTRATION_TOKEN=
+```
 
-После установки свежего source archive:
+Video node credentials master не генерирует. Они выбираются на node и вводятся через UI.
+
+## Установка
 
 ```bash
-PROJECT_DIR=/opt/newdomofon-video-master \
-  bash /opt/newdomofon-video-master/scripts/repair-master-project-permissions.sh
+cd /root/newdomofon-video-master-main
+bash scripts/install-master-manual-local-root.sh
 ```
 
-Скрипт:
+Подробно: [INSTALL_MASTER_LOCAL_ROOT.md](INSTALL_MASTER_LOCAL_ROOT.md).
 
-1. останавливает application services;
-2. переводит project и environment в `root:root`;
-3. устанавливает root systemd units;
-4. выполняет `daemon-reload`;
-5. запускает backend, events, SmartYard и RTSP;
-6. ждёт backend health;
-7. печатает фактического пользователя каждого unit.
-
-Проверка:
+## Проверка runtime users
 
 ```bash
 for service in \
@@ -84,27 +88,41 @@ for service in \
   newdomofon-public-events-proxy.service \
   newdomofon-smartyard-compat.service \
   newdomofon-video-rtsp-gateway.service; do
-  printf '%-48s ' "$service"
-  systemctl show -p User --value "$service"
+  if systemctl cat "$service" >/dev/null 2>&1; then
+    printf '%-48s user=%s\n' \
+      "$service" \
+      "$(systemctl show -p User --value "$service")"
+  fi
 done
 ```
 
-Ожидается `root` для каждого application service.
+Ожидается `user=root` только в этом специальном сценарии.
 
 Health:
 
 ```bash
-curl -fsS http://127.0.0.1:3000/api/health | jq .
-curl -fsS http://127.0.0.1:3082/health | jq .
+curl -fsS http://127.0.0.1:3000/api/health | jq
+curl -fsS http://127.0.0.1:3082/health | jq
 ```
+
+## Переход существующего root-only master
+
+Запустите новый wrapper поверх свежего source archive. Он создаст backup существующей production copy, БД и `app.env`, затем переустановит units и очистит legacy registration token.
+
+Не используйте старый `repair-master-project-permissions.sh` как способ перевести обычную установку в root runtime без полного понимания последствий.
 
 ## Безопасность
 
-Root runtime устраняет межпользовательские проблемы прав, но повышает последствия уязвимости в приложении. Поэтому обязательно:
+Root runtime повышает последствия уязвимости. Обязательно:
 
-- не публикуйте `app.env`;
-- сохраняйте `NoNewPrivileges`, `ProtectSystem`, `ProtectHome` и другие systemd sandbox directives;
-- ограничьте порт node и RTSP firewall-правилами;
-- своевременно обновляйте зависимости;
-- не запускайте сторонние скрипты внутри project tree;
-- храните project tree с mode `0700`.
+- не публикуйте `app.env` и access reports;
+- храните project tree `0700`;
+- сохраняйте systemd sandbox directives;
+- ограничьте PostgreSQL loopback/private network;
+- ограничьте RTSP firewall/VPN;
+- не запускайте сторонние scripts внутри project tree;
+- своевременно обновляйте dependencies;
+- не включайте `NODE_REGISTRATION_TOKEN`;
+- не используйте root-only режим без явной эксплуатационной причины.
+
+Все `.env` параметры: [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md).

@@ -1,10 +1,22 @@
-# Установка NewDomofon Video Master из локального архива
+# Установка Video Master из локального архива
 
-Этот способ предназначен для серверов с нестабильным доступом к GitHub.
+Этот способ используется, когда source archive заранее скопирован на Debian 12 и GitHub недоступен для загрузки исходников.
 
-Исходный код проекта не клонируется и не обновляется через `git fetch`. Установщик берёт файлы из ZIP/TAR.GZ, который заранее скопирован в `/root`.
+Актуальная схема не использует старый archive one-shot installer, который мог генерировать legacy node registration token. Распакуйте source и запустите:
 
-Поддерживаются:
+```text
+scripts/install-master-manual-local-root.sh
+```
+
+Он устанавливает strict master и оставляет:
+
+```text
+NODE_REGISTRATION_TOKEN=
+```
+
+Credentials video node создаются на самой node и позже вводятся через UI master.
+
+## 1. Поддерживаемые archives
 
 ```text
 .zip
@@ -13,184 +25,158 @@
 .tar
 ```
 
-## Что всё ещё требует интернета
-
-Локальный архив устраняет обращения к GitHub за исходным кодом проекта. Для чистого Debian интернет всё ещё нужен для:
-
-- Debian APT repositories;
-- NodeSource, если Node.js 22.12+ ещё не установлен;
-- npm registry для `npm ci`;
-- Let's Encrypt;
-- MediaMTX, только если его архив отсутствует локально и в кеше.
-
-MediaMTX можно также положить в `/root` заранее:
-
-```text
-/root/mediamtx_vX.Y.Z_linux_amd64.tar.gz
-```
-
-Установщик автоматически найдёт его. После первой успешной загрузки MediaMTX сохраняется в:
-
-```text
-/var/cache/newdomofon-video/install/
-```
-
-Повторная установка использует кеш и больше не скачивает тот же архив.
-
-## 1. Скопируйте архив проекта
-
 Пример:
 
 ```text
 /root/newdomofon-video-master-main.zip
 ```
 
-Проверьте:
-
-```bash
-ls -lh /root/newdomofon-video-master*
-```
-
-## 2. Извлеките только локальный установщик
+## 2. Распаковка ZIP
 
 ```bash
 apt-get update
 apt-get install -y unzip
 
-ARCHIVE="/root/newdomofon-video-master-main.zip"
-INSTALLER="/root/install-newdomofon-master-from-archive.sh"
+ARCHIVE=/root/newdomofon-video-master-main.zip
+DEST=/root/newdomofon-video-master-main
 
-MEMBER="$(
-  unzip -Z1 "$ARCHIVE" |
-  grep -E '(^|/)scripts/install-master-from-archive\.sh$' |
-  head -1
-)"
-
-test -n "$MEMBER"
-
-unzip -p "$ARCHIVE" "$MEMBER" >"$INSTALLER"
-chmod 700 "$INSTALLER"
-
-bash -n "$INSTALLER"
+rm -rf "$DEST"
+unzip -q "$ARCHIVE" -d /root
 ```
 
-## 3. Запустите установку
+Проверьте фактический каталог после распаковки:
+
+```bash
+find /root -maxdepth 3 -type f \
+  -path '*/scripts/install-master-manual-local-root.sh' \
+  -print
+```
+
+## 3. Распаковка TAR
+
+```bash
+ARCHIVE=/root/newdomofon-video-master-main.tar.gz
+DEST=/root/newdomofon-video-master-main
+
+rm -rf "$DEST"
+mkdir -p "$DEST"
+tar -xzf "$ARCHIVE" -C "$DEST" --strip-components=1
+```
+
+Для `.tar` используйте `tar -xf`, для `.tgz` — `tar -xzf`.
+
+## 4. Проверка source
+
+```bash
+SOURCE_DIR=/root/newdomofon-video-master-main
+
+test -f "$SOURCE_DIR/backend/package.json"
+test -f "$SOURCE_DIR/frontend/package.json"
+test -f "$SOURCE_DIR/scripts/install-master-manual-local-root.sh"
+test -f "$SOURCE_DIR/scripts/install-master-local-root.sh"
+```
+
+## 5. Необязательный MediaMTX archive
+
+Для offline RTSP положите рядом подходящий package:
+
+```text
+/root/mediamtx_vX.Y.Z_linux_amd64.tar.gz
+/root/mediamtx_vX.Y.Z_linux_arm64.tar.gz
+```
+
+## 6. Запуск
 
 Интерактивно:
 
 ```bash
-bash /root/install-newdomofon-master-from-archive.sh \
-  --archive /root/newdomofon-video-master-main.zip
+cd "$SOURCE_DIR"
+bash scripts/install-master-manual-local-root.sh
 ```
 
-Скрипт спросит домен/IP и email для Let's Encrypt.
-
-Неинтерактивно:
+С DNS/TLS:
 
 ```bash
-bash /root/install-newdomofon-master-from-archive.sh \
-  --archive /root/newdomofon-video-master-main.zip \
-  --domain new-video.domofon-37.ru \
-  --email admin@example.com \
+cd "$SOURCE_DIR"
+
+bash scripts/install-master-manual-local-root.sh \
+  --domain video.example.ru \
+  --email admin@example.ru \
   --admin-login admin
 ```
 
 По IP без TLS:
 
 ```bash
-bash /root/install-newdomofon-master-from-archive.sh \
-  --archive /root/newdomofon-video-master-main.zip \
+cd "$SOURCE_DIR"
+
+bash scripts/install-master-manual-local-root.sh \
   --domain 10.106.1.30 \
-  --no-tls
+  --no-tls \
+  --admin-login admin
 ```
 
-## Что делает archive installer
+## 7. Интернет-зависимости
 
-1. Проверяет локальный архив.
-2. Распаковывает его во временный root-only каталог.
-3. Проверяет наличие backend, frontend и deployment scripts.
-4. Создаёт временный локальный Git repository.
-5. Использует `file://...` как источник — без обращения к GitHub.
-6. Сохраняет предыдущий `/opt/newdomofon-video-master`.
-7. Запускает полный one-shot installer.
-8. Устанавливает PostgreSQL, backend, frontend, Nginx и gateways.
-9. Ждёт реальный health backend перед установкой RTSP.
-10. Использует существующий MediaMTX, локальный архив или постоянный кеш.
-11. Выполняет финальные health checks.
-12. Печатает все данные доступа.
+Локальный source archive устраняет обращение к GitHub. На чистом сервере интернет всё ещё может требоваться для:
 
-## Исправление ошибки порта 3000
+- Debian APT;
+- NodeSource;
+- npm registry;
+- Let's Encrypt;
+- MediaMTX при отсутствии локального package.
 
-Ранее RTSP installer выполнял auth preflight сразу после:
+Для полностью offline deployment подготовьте APT/npm cache и MediaMTX package.
+
+## 8. Результат
 
 ```text
-systemctl restart newdomofon-video-backend.service
-```
-
-Backend ещё не успевал открыть `127.0.0.1:3000`, поэтому появлялось:
-
-```text
-curl: (7) Failed to connect to 127.0.0.1 port 3000
-```
-
-Теперь deployment и RTSP installer ждут `/api/health` до 60 секунд. Если backend действительно не запускается, установка выводит `systemctl status` и последние 300 строк `journalctl`.
-
-## Итоговые данные
-
-После успеха:
-
-```text
+/opt/newdomofon-video-master
+/etc/newdomofon-video/app.env
 /root/newdomofon-master-access.txt
 /root/newdomofon-master-access.json
+/root/newdomofon-master-local-root-*.log
 ```
 
-Просмотр:
+Проверьте:
 
 ```bash
-cat /root/newdomofon-master-access.txt
-jq . /root/newdomofon-master-access.json
+grep '^NODE_REGISTRATION_TOKEN=' /etc/newdomofon-video/app.env
 ```
 
-Там находятся:
-
-- web URL;
-- web login/password;
-- PostgreSQL URL и credentials;
-- node registration token;
-- RTSP template;
-- пути к логу и backup.
-
-Права файлов — `0600`.
-
-## Логи
-
-```bash
-ls -lt /root/newdomofon-master-install-*.log | head
-
-tail -300 "$(
-  ls -t /root/newdomofon-master-install-*.log |
-  head -1
-)"
-```
-
-## Backup старого проекта
-
-Если `/opt/newdomofon-video-master` уже существовал, он переносится в:
+Ожидается:
 
 ```text
-/opt/newdomofon-video-master.before-local-archive-YYYYMMDD-HHMMSS
+NODE_REGISTRATION_TOKEN=
 ```
 
-База PostgreSQL не удаляется. Перед миграциями существующая база сохраняется в migration backup.
+## 9. Проверка services
 
-## Повторный запуск
+```bash
+systemctl is-active newdomofon-video-backend.service
+systemctl is-active newdomofon-smartyard-compat.service
+systemctl is-active postgresql
+systemctl is-active nginx
 
-Повторный запуск безопасен:
+curl -fsS http://127.0.0.1:3000/api/health | jq
+curl -fsS http://127.0.0.1:3082/health | jq
+nginx -t
+```
 
-- существующая роль PostgreSQL не создаётся повторно;
-- база не удаляется;
-- secrets сохраняются, если не указан `--regenerate-secrets`;
-- MediaMTX используется из установленного binary или кеша;
-- старый checkout сохраняется.
+## 10. Добавление node
 
-Не используйте `--regenerate-secrets` без необходимости на рабочем сервере.
+После отдельного развёртывания node получите:
+
+```text
+/root/newdomofon-node-master-registration.env
+```
+
+Введите все шесть значений в `Администрирование → Ноды → Создать node`. Master ничего не генерирует.
+
+Подробно: [docs/MANUAL_NODE_REGISTRATION.md](docs/MANUAL_NODE_REGISTRATION.md).
+
+## 11. `.env`
+
+Все master settings: [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md).
+
+Не публикуйте access reports, `app.env` и backups.

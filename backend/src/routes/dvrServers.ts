@@ -9,8 +9,14 @@ import { audit } from '../utils/audit.js';
 export const dvrServersRouter = Router();
 dvrServersRouter.use(requireAuth);
 
+const safeSecret = z.string()
+  .trim()
+  .min(16)
+  .max(512)
+  .regex(/^[A-Za-z0-9._~-]+$/, 'Use only letters, digits, dot, underscore, tilde and hyphen');
+
 const schema = z.object({
-  name: z.string().min(1),
+  name: z.string().trim().min(1).max(120),
   base_url: z.string().min(1).optional(),
   public_base_url: z.string().min(1).optional(),
   internal_url: z.string().optional().nullable(),
@@ -18,9 +24,19 @@ const schema = z.object({
   capabilities: z.record(z.any()).optional()
 }).strict();
 
-function createSecret(bytes = 32): string {
-  return crypto.randomBytes(bytes).toString('base64url');
-}
+const createSchema = schema.extend({
+  master_url: z.string().url(),
+  node_id: z.string().uuid(),
+  agent_token: safeSecret,
+  media_secret: safeSecret,
+  public_base_url: z.string().url(),
+  internal_url: z.string().url()
+}).strict();
+
+const rotateSchema = z.object({
+  agent_token: safeSecret,
+  media_secret: safeSecret
+}).strict();
 
 function sha256(raw: string): string {
   return crypto.createHash('sha256').update(raw).digest('hex');
@@ -44,34 +60,54 @@ dvrServersRouter.get('/', asyncHandler(async (_req, res) => {
 }));
 
 dvrServersRouter.post('/', requireRole('super_admin', 'operator'), asyncHandler(async (req, res) => {
-  const body = schema.parse(req.body || {});
-  const agentToken = createSecret();
-  const mediaSecret = createSecret();
-  const publicBaseUrl = body.public_base_url || body.base_url || '';
+  const body = createSchema.parse(req.body || {});
+  const duplicate = await query<{ id: string; name: string }>(
+    'SELECT id, name FROM dvr_servers WHERE id = $1',
+    [body.node_id]
+  );
+  if (duplicate.rowCount) {
+    return res.status(409).json({
+      error: 'Node с таким DVR_NODE_ID уже существует',
+      node: duplicate.rows[0]
+    });
+  }
+
+  const publicBaseUrl = body.public_base_url;
+  const capabilities = {
+    ...(body.capabilities || {}),
+    manual_registration: {
+      master_url: body.master_url,
+      credential_source: 'operator_supplied'
+    }
+  };
   const result = await query<{ id: string }>(
     `INSERT INTO dvr_servers(
-       name, base_url, public_base_url, internal_url, status,
+       id, name, base_url, public_base_url, internal_url, status,
        agent_token_hash, media_secret, is_enabled, capabilities
      )
-     VALUES ($1,$2,$3,$4,'unknown',$5,$6,$7,$8)
+     VALUES ($1,$2,$3,$4,$5,'unknown',$6,$7,$8,$9)
      RETURNING id`,
     [
+      body.node_id,
       body.name,
       publicBaseUrl,
       publicBaseUrl,
-      body.internal_url ?? null,
-      sha256(agentToken),
-      mediaSecret,
+      body.internal_url,
+      sha256(body.agent_token),
+      body.media_secret,
       body.is_enabled ?? true,
-      JSON.stringify(body.capabilities || {})
+      JSON.stringify(capabilities)
     ]
   );
-  await audit(req, 'dvr_server.create', 'dvr_server', result.rows[0].id);
+  await audit(req, 'dvr_server.create', 'dvr_server', result.rows[0].id, {
+    credential_source: 'operator_supplied',
+    master_url: body.master_url
+  });
   res.status(201).json({
     id: result.rows[0].id,
     node_id: result.rows[0].id,
-    agent_token: agentToken,
-    media_secret: mediaSecret
+    master_url: body.master_url,
+    credential_source: 'operator_supplied'
   });
 }));
 
@@ -93,20 +129,21 @@ dvrServersRouter.patch('/:id', requireRole('super_admin', 'operator'), asyncHand
 }));
 
 dvrServersRouter.post('/:id/rotate-token', requireRole('super_admin'), asyncHandler(async (req, res) => {
-  const agentToken = createSecret();
-  const mediaSecret = req.body?.rotate_media_secret === false ? null : createSecret();
+  const body = rotateSchema.parse(req.body || {});
   const result = await query(
     `UPDATE dvr_servers
         SET agent_token_hash = $2,
-            media_secret = COALESCE($3, media_secret),
+            media_secret = $3,
             config_generation = config_generation + 1
       WHERE id = $1
       RETURNING id`,
-    [req.params.id, sha256(agentToken), mediaSecret]
+    [req.params.id, sha256(body.agent_token), body.media_secret]
   );
   if (!result.rowCount) return res.status(404).json({ error: 'Node not found' });
-  await audit(req, 'dvr_server.rotate_token', 'dvr_server', req.params.id);
-  res.json({ node_id: req.params.id, agent_token: agentToken, media_secret: mediaSecret || undefined });
+  await audit(req, 'dvr_server.rotate_token', 'dvr_server', req.params.id, {
+    credential_source: 'operator_supplied'
+  });
+  res.json({ ok: true, node_id: req.params.id });
 }));
 
 // Camera placement is owned by the parent device. Keep the old endpoint explicit

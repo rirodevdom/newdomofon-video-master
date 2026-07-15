@@ -1,0 +1,43 @@
+name: Validate manual automatic managed tokens
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'backend/migrations/094_manual_auto_managed_camera_tokens.sql'
+      - 'backend/src/services/manualManagedCameraToken.ts'
+      - 'scripts/patch-manual-auto-managed-tokens.py'
+      - 'scripts/install-manual-auto-managed-tokens.sh'
+      - 'frontend/src/views/AdminView.vue'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Validate and apply source patch
+        run: |
+          python3 -m py_compile scripts/patch-manual-auto-managed-tokens.py
+          python3 scripts/patch-manual-auto-managed-tokens.py --project-dir "$GITHUB_WORKSPACE"
+          python3 scripts/patch-manual-auto-managed-tokens.py --project-dir "$GITHUB_WORKSPACE"
+
+      - name: Build backend
+        working-directory: backend
+        run: |
+          npm ci --include=dev
+          npm run build
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci --include=dev
+          npm run build
