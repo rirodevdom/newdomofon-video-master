@@ -43,6 +43,17 @@ BEGIN
         (token_mode = 'manual' AND manual_token_ciphertext IS NOT NULL AND manual_token_digest IS NOT NULL)
       );
   END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+      FROM pg_constraint
+     WHERE conname = 'managed_camera_tokens_auto_assign_requires_camera_scope'
+       AND conrelid = 'managed_camera_tokens'::regclass
+  ) THEN
+    ALTER TABLE managed_camera_tokens
+      ADD CONSTRAINT managed_camera_tokens_auto_assign_requires_camera_scope
+      CHECK (NOT auto_assign_new_cameras OR scopes @> ARRAY['camera']::text[]);
+  END IF;
 END $$;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_managed_camera_tokens_manual_digest
