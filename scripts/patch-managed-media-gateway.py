@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import subprocess
+import sys
 
 CAMERA_PREFIX_LINE = "  if (rest.startsWith('cameras/')) rest = rest.slice('cameras/'.length);\n"
 PATH_FILES = (
@@ -107,6 +109,14 @@ def main() -> int:
     node_aware = gateway_dir / "server-node-aware.js"
     if patch_node_resolver(node_aware) and str(node_aware.relative_to(project)) not in changed_files:
         changed_files.append(str(node_aware.relative_to(project)))
+
+    archive_patch = project / "scripts/patch-archive-playback-window.py"
+    if not archive_patch.is_file():
+        raise SystemExit(f"Archive playback patch not found: {archive_patch}")
+    subprocess.run(
+        [sys.executable, str(archive_patch), "--project-dir", str(project)],
+        check=True,
+    )
 
     print("Managed media gateway patch applied")
     if changed_files:
