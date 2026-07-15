@@ -1,0 +1,62 @@
+name: Managed token standard deploy
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/deploy-master.sh'
+      - 'scripts/patch-manual-auto-managed-tokens.py'
+      - 'scripts/fix-manual-token-resolver-variable.py'
+      - 'backend/src/routes/managedCameraTokens.ts'
+      - 'backend/src/routes/internalSmartYard.ts'
+      - 'backend/src/routes/managedAdminPlayer.ts'
+      - 'backend/src/services/manualManagedCameraToken.ts'
+      - 'frontend/src/views/AdminView.vue'
+      - '.github/workflows/managed-token-standard-deploy.yml'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Validate deploy and patchers
+        run: |
+          bash -n scripts/deploy-master.sh
+          python3 -m py_compile \
+            scripts/patch-manual-auto-managed-tokens.py \
+            scripts/fix-manual-token-resolver-variable.py
+
+      - name: Apply runtime integration exactly as production deploy
+        run: |
+          python3 scripts/fix-manual-token-resolver-variable.py --project-dir "$GITHUB_WORKSPACE"
+          python3 scripts/patch-manual-auto-managed-tokens.py --project-dir "$GITHUB_WORKSPACE"
+          python3 scripts/fix-manual-token-resolver-variable.py --project-dir "$GITHUB_WORKSPACE"
+
+          grep -q 'manualManagedCameraTokenDigest(body.token)' \
+            backend/src/routes/internalSmartYard.ts
+          grep -q 'rawManagedPlayerToken(access)' \
+            backend/src/routes/managedAdminPlayer.ts
+          grep -q 'auto_assign_new_cameras' \
+            backend/src/routes/managedCameraTokens.ts
+          grep -q 'auto_assign_new_cameras' \
+            frontend/src/views/AdminView.vue
+
+      - name: Build backend
+        working-directory: backend
+        run: |
+          npm ci --include=dev
+          npm run build
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci --include=dev
+          npm run build
