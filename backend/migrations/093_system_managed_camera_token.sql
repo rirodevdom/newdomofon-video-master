@@ -29,6 +29,15 @@ BEGIN
          expires_at = NULL;
 END $$;
 
+-- Disable older fallback/replacement triggers before normalizing an installation
+-- where a previous revision of this migration may already have been applied.
+DROP TRIGGER IF EXISTS trg_managed_camera_token_restore_system
+  ON managed_camera_token_cameras;
+DROP TRIGGER IF EXISTS trg_managed_camera_token_replace_current
+  ON managed_camera_token_cameras;
+DROP TRIGGER IF EXISTS trg_managed_camera_token_replace_system
+  ON managed_camera_token_cameras;
+
 -- Never keep the system fallback together with one or more custom tokens.
 DELETE FROM managed_camera_token_cameras system_assignment
  WHERE system_assignment.token_id = '00000000-0000-4000-8000-000000000001'::uuid
@@ -86,7 +95,8 @@ BEGIN
        WHERE custom_assignment.camera_id = NEW.camera_id
          AND custom_assignment.token_id <> '00000000-0000-4000-8000-000000000001'::uuid
     ) THEN
-      RETURN NULL;
+      RAISE EXCEPTION 'System fallback cannot be attached while custom tokens exist'
+        USING ERRCODE = '23514';
     END IF;
     RETURN NEW;
   END IF;
@@ -101,10 +111,6 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS trg_managed_camera_token_replace_current
-  ON managed_camera_token_cameras;
-DROP TRIGGER IF EXISTS trg_managed_camera_token_replace_system
-  ON managed_camera_token_cameras;
 CREATE TRIGGER trg_managed_camera_token_replace_system
 BEFORE INSERT ON managed_camera_token_cameras
 FOR EACH ROW
@@ -158,8 +164,6 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS trg_managed_camera_token_restore_system
-  ON managed_camera_token_cameras;
 CREATE TRIGGER trg_managed_camera_token_restore_system
 AFTER DELETE ON managed_camera_token_cameras
 FOR EACH ROW
