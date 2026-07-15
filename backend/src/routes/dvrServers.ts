@@ -25,6 +25,7 @@ const schema = z.object({
 }).strict();
 
 const createSchema = schema.extend({
+  master_url: z.string().url(),
   node_id: z.string().uuid(),
   agent_token: safeSecret,
   media_secret: safeSecret,
@@ -72,6 +73,13 @@ dvrServersRouter.post('/', requireRole('super_admin', 'operator'), asyncHandler(
   }
 
   const publicBaseUrl = body.public_base_url;
+  const capabilities = {
+    ...(body.capabilities || {}),
+    manual_registration: {
+      master_url: body.master_url,
+      credential_source: 'operator_supplied'
+    }
+  };
   const result = await query<{ id: string }>(
     `INSERT INTO dvr_servers(
        id, name, base_url, public_base_url, internal_url, status,
@@ -88,15 +96,17 @@ dvrServersRouter.post('/', requireRole('super_admin', 'operator'), asyncHandler(
       sha256(body.agent_token),
       body.media_secret,
       body.is_enabled ?? true,
-      JSON.stringify(body.capabilities || {})
+      JSON.stringify(capabilities)
     ]
   );
   await audit(req, 'dvr_server.create', 'dvr_server', result.rows[0].id, {
-    credential_source: 'operator_supplied'
+    credential_source: 'operator_supplied',
+    master_url: body.master_url
   });
   res.status(201).json({
     id: result.rows[0].id,
     node_id: result.rows[0].id,
+    master_url: body.master_url,
     credential_source: 'operator_supplied'
   });
 }));
