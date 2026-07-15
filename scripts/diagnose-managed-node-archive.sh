@@ -11,6 +11,7 @@ fail() { echo "ERROR: $*" >&2; exit 1; }
 section() { printf '\n===== %s =====\n' "$*"; }
 
 [[ -n "$STREAM_NAME" ]] || fail "Usage: STREAM_NAME=name [START_ISO=...] [END_ISO=...] $0"
+[[ "$STREAM_NAME" =~ ^[A-Za-z0-9_-]+$ ]] || fail "Invalid STREAM_NAME"
 [[ -f "$ENV_FILE" ]] || fail "Environment file not found: $ENV_FILE"
 command -v curl >/dev/null || fail "curl is required"
 command -v jq >/dev/null || fail "jq is required"
@@ -48,12 +49,12 @@ fi
 [[ -n "$MANAGED_TOKEN" ]] || fail "Managed token is empty"
 
 cleanup() {
-  unset MANAGED_TOKEN UPSTREAM_TOKEN RESOLVE_JSON
+  unset MANAGED_TOKEN UPSTREAM_TOKEN RESOLVE_JSON REQUEST_JSON
 }
 trap cleanup EXIT
 
 section "Database camera and device policy"
-psql "$DATABASE_URL" -P pager=off -v ON_ERROR_STOP=1 -v stream="$STREAM_NAME" -c "
+psql "$DATABASE_URL" -P pager=off -v ON_ERROR_STOP=1 -c "
 SELECT c.id AS camera_id,
        c.name AS camera_name,
        c.stream_name,
@@ -70,7 +71,7 @@ SELECT c.id AS camera_id,
   FROM cameras c
   JOIN devices d ON d.id = c.device_id
   LEFT JOIN dvr_servers ds ON ds.id = c.dvr_server_id
- WHERE c.stream_name = :'stream';
+ WHERE c.stream_name = '${STREAM_NAME}';
 "
 
 section "Resolve managed token"
@@ -118,6 +119,7 @@ RANGES_CODE="$(curl -sS --max-time 30 \
   "$NODE_URL/cameras/$STREAM_NAME/archive/ranges")"
 echo "HTTP $RANGES_CODE"
 jq . "$RANGES_FILE" 2>/dev/null || sed -n '1,80p' "$RANGES_FILE"
+RANGES_COUNT="$(jq -r '(.items // []) | length' "$RANGES_FILE" 2>/dev/null || echo 0)"
 rm -f "$RANGES_FILE"
 
 section "Node archive manifest"
@@ -138,8 +140,12 @@ sed -n '1,80p' "$MANIFEST_FILE" | sed -E 's/([?&]token=)[^&[:space:]]+/\1***/g'
 rm -f "$MANIFEST_FILE" "$MANIFEST_HEADERS"
 
 section "Interpretation"
-if [[ "$RANGES_CODE" == "200" ]] && [[ "$(jq -r '(.items // []) | length' 2>/dev/null <<<"$(curl -sS --max-time 30 --get --data-urlencode "start=$START_ISO" --data-urlencode "end=$END_ISO" --data-urlencode "token=$UPSTREAM_TOKEN" "$NODE_URL/cameras/$STREAM_NAME/archive/ranges")")" != "0" ]]; then
-  echo "Node reports archive ranges in the selected window. A manifest 404 then indicates a playlist/range boundary bug."
+if [[ "$RANGES_CODE" == "200" && "$RANGES_COUNT" != "0" ]]; then
+  if [[ "$MANIFEST_CODE" == "200" ]]; then
+    echo "Node archive is healthy for the selected window. Any remaining failure is between the master gateway and public nginx."
+  else
+    echo "Node reports archive ranges but the manifest failed. Inspect the node DVR route and playlist generation."
+  fi
 else
   echo "Node reports no archive ranges in the selected window. Inspect the node filesystem and recorder archive_storage mode."
 fi
