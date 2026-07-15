@@ -12,6 +12,7 @@ import { cameraGroupsRouter } from './routes/cameraGroups.js';
 import { camerasRouter } from './routes/cameras.js';
 import { favoritesRouter } from './routes/favorites.js';
 import { playerPublicArchiveRouter, playerRouter } from './routes/player.js';
+import { managedAdminPlayerRouter } from './routes/managedAdminPlayer.js';
 import { mediaRouter } from './routes/media.js';
 import { auditRouter } from './routes/audit.js';
 import { eventsRouter, internalEventsRouter } from './routes/events.js';
@@ -90,6 +91,10 @@ app.use('/api/cameras', camerasRouter);
 app.use('/api/player', playerPublicArchiveRouter);
 app.use('/api', eventsRouter);
 app.use('/api/favorites', favoritesRouter);
+// Admin live and node-archive URLs must use an assigned managed token. This
+// router is mounted before the legacy authenticated player router, which still
+// handles device archive preparation, ranges, export and compatibility paths.
+app.use('/api/player', managedAdminPlayerRouter);
 app.use('/api/player', playerRouter);
 app.use('/api/player', playerCompatRouter);
 
