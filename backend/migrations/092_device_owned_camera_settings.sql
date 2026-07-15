@@ -1,7 +1,5 @@
 -- Camera placement and archive policy are owned by the parent device.
--- Restore many-to-many managed-token assignments and normalize existing cameras.
-
-DROP INDEX IF EXISTS uq_managed_camera_token_cameras_camera_id;
+-- Managed-token assignments remain single-current-token per camera.
 
 UPDATE cameras AS camera
    SET dvr_server_id = device.dvr_server_id,
