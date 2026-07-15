@@ -108,21 +108,11 @@ case "$ROLE" in
     rsync -a --delete dist/ /var/www/newdomofon-video/
 
     log "Installing and restarting master services"
-    install -m 0644 \
-      "$MASTER_DIR/deploy/systemd/newdomofon-smartyard-compat.service" \
-      /etc/systemd/system/newdomofon-smartyard-compat.service
-    systemctl daemon-reload
     systemctl restart newdomofon-video-backend.service
-    systemctl enable newdomofon-smartyard-compat.service >/dev/null 2>&1 || true
-    systemctl restart newdomofon-smartyard-compat.service
-    for service in \
-      newdomofon-video-smartyard-gateway.service \
-      newdomofon-video-node-media-gateway.service \
-      newdomofon-video-events-gateway.service \
-      newdomofon-video-preview-gateway.service \
-      newdomofon-video-rtsp-gateway.service; do
-      systemctl list-unit-files "$service" >/dev/null 2>&1 && systemctl restart "$service" || true
-    done
+    PROJECT_DIR="$MASTER_DIR" ENV_FILE="$ENV_FILE" \
+      bash "$MASTER_DIR/scripts/repair-managed-media-gateway-service.sh"
+    systemctl list-unit-files newdomofon-video-rtsp-gateway.service >/dev/null 2>&1 \
+      && systemctl restart newdomofon-video-rtsp-gateway.service || true
     nginx -t
     systemctl reload nginx
 
