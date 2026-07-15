@@ -1,89 +1,53 @@
-# Системный fallback и many-to-many токены камер
+# System-managed camera token
 
-## Итоговая модель
+## Assignment model
 
-Связь пользовательских токенов остаётся **many-to-many**:
+Managed camera tokens remain many-to-many:
 
-- к одной камере можно привязать несколько пользовательских токенов;
-- один пользовательский токен можно привязать к нескольким камерам;
-- добавление нового пользовательского токена не удаляет другие пользовательские токены камеры.
+- one camera may have multiple user-managed tokens;
+- one user-managed token may be assigned to multiple cameras;
+- adding another user-managed token never removes existing user assignments.
 
-`Внутренний системный токен` используется только как fallback:
+The protected system token is only a fallback:
 
-- новая камера без выбранного пользовательского токена получает системный fallback;
-- если пользовательский токен выбран при создании камеры, после привязки системный fallback удаляется;
-- первая последующая пользовательская привязка также удаляет системный fallback;
-- дополнительные пользовательские токены добавляются рядом с уже привязанными;
-- если удалить последний пользовательский токен камеры, системный fallback возвращается автоматически;
-- системный токен нельзя удалить, отключить, ограничить по scope, сделать временным или ротировать.
+- a newly created camera receives it automatically;
+- assigning the first user-managed token removes only the system fallback;
+- removing one of several user-managed tokens keeps the other assignments;
+- removing the last user-managed token restores the system fallback;
+- the protected system token cannot be disabled, rotated or manually removed.
 
-Системный token ID:
+The fixed system token row is:
 
 ```text
 00000000-0000-4000-8000-000000000001
 ```
 
-Сам секрет в PostgreSQL не хранится. Публичное значение формируется master из token ID, generation и `MANAGED_CAMERA_TOKEN_SECRET`. Если отдельная переменная отсутствует, backend совместимо использует `JWT_SECRET`.
+## Admin playback
 
-Managed token никогда не передаётся video node напрямую. Master проверяет токен и его связь с камерой, затем выпускает короткоживущий HMAC token конкретной node для live, archive или events.
+The admin player uses an active managed token assigned to the camera. When several user-managed tokens are assigned, the most recently assigned active token with the `camera` scope is selected. The system token is selected only when no active user-managed token is available.
 
-## Миграция существующей установки
+The browser-facing URL carries an `m1...` token. The master SmartYard media gateway validates it and then creates a short-lived internal HMAC token for the assigned video node. The video node never receives or validates the reusable managed token directly.
 
-Миграция `093_system_managed_camera_token.sql` выполняется идемпотентно при старте backend:
-
-1. создаёт или восстанавливает системный токен;
-2. сохраняет все существующие пользовательские many-to-many связи;
-3. удаляет системный fallback у камер, где уже есть хотя бы один пользовательский токен;
-4. назначает системный fallback камерам без пользовательских токенов;
-5. гарантирует удаление fallback при первой пользовательской привязке;
-6. возвращает fallback после удаления последней пользовательской привязки;
-7. защищает системный токен от удаления, отключения и ротации.
-
-## Развёртывание на двух серверах
-
-Основной сценарий находится в master repository:
+Public admin URLs may use the camera-prefixed form:
 
 ```text
-scripts/apply-managed-token-rollout.sh
+/cameras/<stream_name>/live.m3u8?token=m1...
+/cameras/<stream_name>/archive.m3u8?start=...&end=...&token=m1...
 ```
 
-После публикации изменений в `main` сначала обновите node, затем master. На обоих серверах скачайте свежую копию сценария отдельно: он сам сохранит локальные изменения checkout в stash и переключит repository на нужную ветку.
+Gateway parsers must remove the leading `cameras/` component before resolving `stream_name`. Without this normalization the resolver sees `cameras` as the stream, falls back to the legacy handler and returns 401/403 for a valid managed token.
 
-На `video-node1`:
+The deployment patch `scripts/patch-managed-media-gateway.py` normalizes this path in the node-aware, event, preview and format gateway layers. It also prevents managed-token resolver errors from being silently hidden by the legacy fallback.
 
-```bash
-curl -fsSL \
-  https://raw.githubusercontent.com/rirodevdom/newdomofon-video-master/main/scripts/apply-managed-token-rollout.sh \
-  -o /root/apply-managed-token-rollout.sh
-chmod 700 /root/apply-managed-token-rollout.sh
-bash /root/apply-managed-token-rollout.sh node
-```
+## Runtime secrets
 
-На `video-master`:
+`MANAGED_CAMERA_TOKEN_SECRET` signs reusable managed tokens. Existing installations initialize it from the current `JWT_SECRET` so already issued tokens remain valid.
 
-```bash
-curl -fsSL \
-  https://raw.githubusercontent.com/rirodevdom/newdomofon-video-master/main/scripts/apply-managed-token-rollout.sh \
-  -o /root/apply-managed-token-rollout.sh
-chmod 700 /root/apply-managed-token-rollout.sh
-bash /root/apply-managed-token-rollout.sh master
-```
+`INTERNAL_DVR_SECRET` authenticates calls from the SmartYard media gateway to the backend resolver. The rollout and the normal master deployment generate it automatically when it is absent. Both the backend and gateway read the same `/etc/newdomofon-video/app.env` file.
 
-Скрипт:
+## Rollout
 
-- сохраняет `app.env`, git diff/status и PostgreSQL dump;
-- прячет локальные изменения checkout в отдельный git stash;
-- обновляет исходники;
-- сохраняет совместимость уже выпущенных managed tokens;
-- применяет UI-патч выбора токена при создании камеры;
-- собирает backend/frontend;
-- применяет миграции;
-- перезапускает сервисы;
-- проверяет health;
-- ищет камеры без токена;
-- ищет ошибочное одновременное наличие системного и пользовательских токенов.
-
-Для проверки рабочей ветки до merge скачайте сценарий из ветки и задайте `TARGET_REF`:
+Test the branch on master:
 
 ```bash
 curl -fsSL \
@@ -94,28 +58,15 @@ TARGET_REF=agent/system-managed-camera-token \
   bash /root/apply-managed-token-rollout.sh master
 ```
 
-Node repository не содержит логики внешних managed tokens: node принимает только короткоживущий внутренний токен, выпущенный master. Поэтому функциональная правка находится на master, а node-часть rollout выполняет безопасное обновление и health-check совместимой node.
+The rollout:
 
-## Проверка инвариантов
-
-Камер без единого токена быть не должно:
-
-```sql
-SELECT c.id, c.name, c.stream_name
-  FROM cameras c
- WHERE NOT EXISTS (
-   SELECT 1 FROM managed_camera_token_cameras a WHERE a.camera_id = c.id
- );
-```
-
-Системный fallback не должен находиться рядом с пользовательскими токенами:
-
-```sql
-SELECT a.camera_id
-  FROM managed_camera_token_cameras a
- GROUP BY a.camera_id
-HAVING bool_or(a.token_id = '00000000-0000-4000-8000-000000000001'::uuid)
-   AND bool_or(a.token_id <> '00000000-0000-4000-8000-000000000001'::uuid);
-```
-
-Оба запроса должны вернуть `0 rows`. При этом несколько пользовательских токенов у одной камеры являются нормальным состоянием.
+- creates a PostgreSQL and environment backup;
+- preserves managed-token signing compatibility;
+- ensures the internal gateway secret exists;
+- applies database, UI and gateway patches;
+- installs and restarts `newdomofon-smartyard-compat.service`;
+- verifies the backend on port 3000;
+- verifies the public gateway on port 3082;
+- verifies the node-aware inner gateway on port 3084;
+- checks that port 3084 reports `v301-node-aware-smartyard-gateway` and `internal_secret_configured=true`;
+- checks the system-token fallback invariants in PostgreSQL.
