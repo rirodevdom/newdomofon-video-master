@@ -209,7 +209,7 @@ async function load() {
     } else if (tokenAssignmentError) {
       notify(`Камера создана, но пользовательский токен не назначен: ${tokenAssignmentError}. Оставлен системный токен.`, 'error');
     } else if (cameraForm.managed_token_id) {
-      notify('Камера создана; выбранный пользовательский токен заменил системный');
+      notify('Камера создана; выбранный пользовательский токен заменил системный fallback');
     } else {
       notify('Камера создана; назначен внутренний системный токен');
     }'''
@@ -220,25 +220,37 @@ async function load() {
 
 def patch_admin_links(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
-    if "У камеры всегда один текущий токен" in text and "Заменить текущий токен" in text:
+    desired_info = (
+        "К камере можно привязать несколько пользовательских токенов. Пока их нет, работает внутренний "
+        "системный токен. Первая пользовательская привязка удаляет системный fallback; после удаления "
+        "последнего пользовательского токена fallback возвращается автоматически."
+    )
+    if desired_info in text:
         return
-    replacements = [
-        (
-            "Нажмите на камеру, затем выберите один из уже привязанных токенов или добавьте новый. Ссылки формируются для конкретной пары «камера + токен». HLS, MPEG-TS, DASH и JPEG работают через HTTPS gateway. RTSP показывается только когда на сервере настроен публичный RTSP gateway.",
-            "У камеры всегда один текущий токен. Внутренний системный токен назначается автоматически, а выбранный пользовательский токен заменяет его. Live и архив используют этот текущий токен.",
-            "links info",
-        ),
-        ("Привязанные токены", "Текущий токен", "current token title"),
-        ("Добавить токен", "Заменить текущий токен", "replace token title"),
-        ("Привязать и показать", "Заменить и показать", "replace token button"),
-        (
-            "notify(response.data.assignment_added ? 'Токен привязан, ссылки сформированы' : 'Ссылки сформированы');",
+
+    original_info = (
+        "Нажмите на камеру, затем выберите один из уже привязанных токенов или добавьте новый. Ссылки "
+        "формируются для конкретной пары «камера + токен». HLS, MPEG-TS, DASH и JPEG работают через HTTPS "
+        "gateway. RTSP показывается только когда на сервере настроен публичный RTSP gateway."
+    )
+    old_single_info = (
+        "У камеры всегда один текущий токен. Внутренний системный токен назначается автоматически, а "
+        "выбранный пользовательский токен заменяет его. Live и архив используют этот текущий токен."
+    )
+
+    if old_single_info in text:
+        text = text.replace(old_single_info, desired_info, 1)
+        text = text.replace("Текущий токен", "Привязанные токены", 1)
+        text = text.replace("Заменить текущий токен", "Добавить токен", 1)
+        text = text.replace("Заменить и показать", "Привязать и показать", 1)
+        text = text.replace(
             "notify('Текущий токен установлен, ссылки сформированы');",
-            "token replacement notification",
-        ),
-    ]
-    for old, new, label in replacements:
-        text = replace_once(text, old, new, label)
+            "notify(response.data.assignment_added ? 'Токен привязан, ссылки сформированы' : 'Ссылки сформированы');",
+            1,
+        )
+    else:
+        text = replace_once(text, original_info, desired_info, "links fallback info")
+
     path.write_text(text, encoding="utf-8")
 
 
