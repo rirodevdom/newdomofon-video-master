@@ -43,9 +43,10 @@ sudo cat /root/newdomofon-node-master-registration.env
 Администрирование → Ноды → Создать node
 ```
 
-Введите:
+Введите все значения из файла регистрации:
 
 - название node;
+- `DVR_MASTER_URL`;
 - `DVR_NODE_ID`;
 - `DVR_NODE_TOKEN`;
 - `DVR_NODE_MEDIA_SECRET`;
@@ -53,7 +54,7 @@ sudo cat /root/newdomofon-node-master-registration.env
 - `DVR_NODE_INTERNAL_URL`;
 - признак активности.
 
-`DVR_MASTER_URL` показывается в форме справочно и равен адресу текущего master.
+Поле `DVR_MASTER_URL` предварительно заполняется адресом открытого master, но остаётся редактируемым. Введённое значение сохраняется в metadata записи node для проверки конфигурации.
 
 ## 3. Хранение credentials
 
@@ -61,7 +62,8 @@ Master сохраняет:
 
 - введённый `DVR_NODE_ID` как UUID записи `dvr_servers.id`;
 - SHA-256 хеш введённого `DVR_NODE_TOKEN` в `agent_token_hash`;
-- введённый `DVR_NODE_MEDIA_SECRET` в `media_secret`.
+- введённый `DVR_NODE_MEDIA_SECRET` в `media_secret`;
+- введённый `DVR_MASTER_URL` в `capabilities.manual_registration.master_url`.
 
 Исходный agent token не хранится и не может быть восстановлен из master.
 
@@ -74,6 +76,7 @@ set -a
 . /etc/newdomofon-video/app.env
 set +a
 
+printf 'DVR_MASTER_URL=%s\n' "$DVR_MASTER_URL"
 printf 'DVR_NODE_ID=%s\n' "$DVR_NODE_ID"
 printf 'DVR_NODE_PUBLIC_BASE_URL=%s\n' "$DVR_NODE_PUBLIC_BASE_URL"
 printf 'DVR_NODE_INTERNAL_URL=%s\n' "$DVR_NODE_INTERNAL_URL"
