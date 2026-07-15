@@ -111,10 +111,11 @@ case "$ROLE" in
     systemctl restart newdomofon-video-backend.service
     PROJECT_DIR="$MASTER_DIR" ENV_FILE="$ENV_FILE" \
       bash "$MASTER_DIR/scripts/repair-managed-media-gateway-service.sh"
+    SITE_CONF="/etc/nginx/sites-available/newdomofon-video.conf" \
+      BACKUP_DIR="$BACKUP_ROOT/nginx-managed-media-routing" \
+      bash "$MASTER_DIR/scripts/repair-managed-media-nginx-routing.sh"
     systemctl list-unit-files newdomofon-video-rtsp-gateway.service >/dev/null 2>&1 \
       && systemctl restart newdomofon-video-rtsp-gateway.service || true
-    nginx -t
-    systemctl reload nginx
 
     log "Verifying master and managed media gateway"
     systemctl --no-pager --full status newdomofon-video-backend.service | sed -n '1,20p'
