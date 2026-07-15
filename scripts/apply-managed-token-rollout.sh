@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROLE="${1:-auto}"
+MASTER_DIR="${MASTER_DIR:-/opt/newdomofon-video-master}"
+NODE_DIR="${NODE_DIR:-/opt/newdomofon-video-node}"
+ENV_FILE="${ENV_FILE:-/etc/newdomofon-video/app.env}"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+BACKUP_ROOT="${BACKUP_ROOT:-/opt/newdomofon-video-backups/managed-token-rollout-${STAMP}}"
+TARGET_REF="${TARGET_REF:-main}"
+
+log() { printf '\n[%s] %s\n' "$(date '+%F %T')" "$*"; }
+fail() { echo "ERROR: $*" >&2; exit 1; }
+
+[[ "$(id -u)" -eq 0 ]] || fail "Run this script as root"
+command -v git >/dev/null || fail "git is required"
+command -v curl >/dev/null || fail "curl is required"
+command -v systemctl >/dev/null || fail "systemctl is required"
+
+if [[ "$ROLE" == auto ]]; then
+  if [[ -d "$MASTER_DIR/.git" ]] && systemctl list-unit-files newdomofon-video-backend.service >/dev/null 2>&1; then
+    ROLE=master
+  elif [[ -d "$NODE_DIR/.git" ]] && systemctl list-unit-files newdomofon-video-dvr.service >/dev/null 2>&1; then
+    ROLE=node
+  else
+    fail "Cannot detect role. Use: $0 master  or  $0 node"
+  fi
+fi
+
+install -d -m 0750 "$BACKUP_ROOT"
+
+update_checkout() {
+  local dir="$1"
+  [[ -d "$dir/.git" ]] || fail "Git checkout not found: $dir"
+  git -C "$dir" status --short >"$BACKUP_ROOT/$(basename "$dir")-git-status.txt"
+  git -C "$dir" diff --binary >"$BACKUP_ROOT/$(basename "$dir")-worktree.patch"
+  git -C "$dir" fetch origin "$TARGET_REF"
+  git -C "$dir" stash push -u -m "before-managed-token-rollout-$STAMP" || true
+  git -C "$dir" stash list >"$BACKUP_ROOT/$(basename "$dir")-git-stash-list.txt"
+  git -C "$dir" switch -C "$TARGET_REF" "origin/$TARGET_REF"
+  git -C "$dir" reset --hard "origin/$TARGET_REF"
+  git -C "$dir" log -1 --oneline
+}
+
+case "$ROLE" in
+  master)
+    command -v python3 >/dev/null || fail "python3 is required"
+    command -v npm >/dev/null || fail "npm is required"
+    command -v rsync >/dev/null || fail "rsync is required"
+    command -v pg_dump >/dev/null || fail "pg_dump is required"
+    command -v psql >/dev/null || fail "psql is required"
+    command -v nginx >/dev/null || fail "nginx is required"
+
+    log "Backing up master configuration and PostgreSQL"
+    [[ -f "$ENV_FILE" ]] || fail "Environment file not found: $ENV_FILE"
+    cp -a "$ENV_FILE" "$BACKUP_ROOT/app.env"
+    set -a
+    # shellcheck disable=SC1090
+    . "$ENV_FILE"
+    set +a
+    [[ -n "${DATABASE_URL:-}" ]] || fail "DATABASE_URL is missing"
+    pg_dump -Fc "$DATABASE_URL" >"$BACKUP_ROOT/postgresql.dump"
+
+    log "Updating master checkout"
+    update_checkout "$MASTER_DIR"
+
+    log "Preserving the managed-token signing secret"
+    if ! grep -q '^MANAGED_CAMERA_TOKEN_SECRET=' "$ENV_FILE"; then
+      [[ -n "${JWT_SECRET:-}" ]] || fail "JWT_SECRET is missing"
+      printf '\nMANAGED_CAMERA_TOKEN_SECRET=%s\n' "$JWT_SECRET" >>"$ENV_FILE"
+      chmod 0640 "$ENV_FILE"
+    fi
+
+    log "Applying managed-token UI source patch"
+    python3 "$MASTER_DIR/scripts/patch-system-managed-token-ui.py" --project-dir "$MASTER_DIR"
+
+    log "Building backend and frontend"
+    cd "$MASTER_DIR/backend"
+    npm ci --include=dev
+    npm run build
+    npm run migrate
+
+    cd "$MASTER_DIR/frontend"
+    npm ci --include=dev
+    npm run build
+    install -d -m 0755 /var/www/newdomofon-video
+    rsync -a --delete dist/ /var/www/newdomofon-video/
+
+    log "Restarting master services"
+    systemctl restart newdomofon-video-backend.service
+    for service in \
+      newdomofon-video-smartyard-gateway.service \
+      newdomofon-video-node-media-gateway.service \
+      newdomofon-video-events-gateway.service \
+      newdomofon-video-preview-gateway.service \
+      newdomofon-video-rtsp-gateway.service; do
+      systemctl list-unit-files "$service" >/dev/null 2>&1 && systemctl restart "$service" || true
+    done
+    nginx -t
+    systemctl reload nginx
+
+    log "Verifying master"
+    systemctl --no-pager --full status newdomofon-video-backend.service | sed -n '1,20p'
+    curl -fsS http://127.0.0.1:3000/api/health
+    echo
+    set -a
+    . "$ENV_FILE"
+    set +a
+    psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+      SELECT t.id, t.name, t.is_active, t.expires_at,
+             count(a.camera_id) AS assigned_cameras
+        FROM managed_camera_tokens t
+        LEFT JOIN managed_camera_token_cameras a ON a.token_id = t.id
+       WHERE t.id = '00000000-0000-4000-8000-000000000001'::uuid
+       GROUP BY t.id, t.name, t.is_active, t.expires_at;
+      SELECT camera_id, count(*) AS token_count
+        FROM managed_camera_token_cameras
+       GROUP BY camera_id
+      HAVING count(*) <> 1;
+    "
+    ;;
+
+  node)
+    command -v npm >/dev/null || fail "npm is required"
+
+    log "Backing up node configuration"
+    [[ -f "$ENV_FILE" ]] && cp -a "$ENV_FILE" "$BACKUP_ROOT/app.env"
+
+    log "Updating node checkout"
+    update_checkout "$NODE_DIR"
+
+    log "Deploying node"
+    PROJECT_DIR="$NODE_DIR" \
+    ENV_FILE="$ENV_FILE" \
+    INSTALL_DISK_GUARD=1 \
+    INSTALL_JOURNAL_LIMITS=1 \
+    INSTALL_ARCHIVE_EVENT_SYNC=1 \
+      bash "$NODE_DIR/scripts/deploy-node.sh"
+
+    log "Verifying node"
+    systemctl --no-pager --full status newdomofon-video-dvr.service | sed -n '1,24p'
+    curl -fsS http://127.0.0.1:3010/health
+    echo
+    ;;
+
+  *)
+    fail "Unknown role '$ROLE'. Use master, node or auto"
+    ;;
+esac
+
+log "Rollout completed. Backup: $BACKUP_ROOT"
