@@ -78,6 +78,14 @@ npm run migrate
 npm run seed
 npm prune --omit=dev
 
+if [[ -f "$PROJECT_DIR/scripts/patch-system-managed-token-ui.py" ]]; then
+  command -v python3 >/dev/null || {
+    echo "python3 is required for managed-token UI patch" >&2
+    exit 1
+  }
+  python3 "$PROJECT_DIR/scripts/patch-system-managed-token-ui.py" --project-dir "$PROJECT_DIR"
+fi
+
 cd "$PROJECT_DIR/frontend"
 npm ci --include=dev
 npm run build
