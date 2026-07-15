@@ -88,6 +88,16 @@ def patch_node_resolver(path: Path) -> bool:
     return changed
 
 
+def run_patch(project: Path, filename: str) -> None:
+    patch = project / "scripts" / filename
+    if not patch.is_file():
+        raise SystemExit(f"Required patch not found: {patch}")
+    subprocess.run(
+        [sys.executable, str(patch), "--project-dir", str(project)],
+        check=True,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--project-dir", default="/opt/newdomofon-video-master")
@@ -110,13 +120,8 @@ def main() -> int:
     if patch_node_resolver(node_aware) and str(node_aware.relative_to(project)) not in changed_files:
         changed_files.append(str(node_aware.relative_to(project)))
 
-    archive_patch = project / "scripts/patch-archive-playback-window.py"
-    if not archive_patch.is_file():
-        raise SystemExit(f"Archive playback patch not found: {archive_patch}")
-    subprocess.run(
-        [sys.executable, str(archive_patch), "--project-dir", str(project)],
-        check=True,
-    )
+    run_patch(project, "patch-archive-playback-window.py")
+    run_patch(project, "patch-archive-seek-navigation.py")
 
     print("Managed media gateway patch applied")
     if changed_files:
