@@ -69,6 +69,37 @@ ensure_runtime_secrets() {
   chmod 0600 "$ENV_FILE"
 }
 
+apply_managed_token_runtime_patches() {
+  local patcher="$PROJECT_DIR/scripts/patch-manual-auto-managed-tokens.py"
+  local collision_fix="$PROJECT_DIR/scripts/fix-manual-token-resolver-variable.py"
+
+  [[ -f "$patcher" ]] || {
+    echo "Managed-token patcher is missing: $patcher" >&2
+    return 1
+  }
+  [[ -f "$collision_fix" ]] || {
+    echo "Managed-token resolver collision fix is missing: $collision_fix" >&2
+    return 1
+  }
+
+  command -v python3 >/dev/null || {
+    echo "python3 is required for managed-token runtime integration" >&2
+    return 1
+  }
+
+  python3 -m py_compile "$patcher" "$collision_fix"
+  python3 "$collision_fix" --project-dir "$PROJECT_DIR"
+  python3 "$patcher" --project-dir "$PROJECT_DIR"
+  python3 "$collision_fix" --project-dir "$PROJECT_DIR"
+
+  grep -q "manualManagedCameraTokenDigest(body.token)" \
+    "$PROJECT_DIR/backend/src/routes/internalSmartYard.ts"
+  grep -q "rawManagedPlayerToken(access)" \
+    "$PROJECT_DIR/backend/src/routes/managedAdminPlayer.ts"
+  grep -q "auto_assign_new_cameras" \
+    "$PROJECT_DIR/backend/src/routes/managedCameraTokens.ts"
+}
+
 cd "$PROJECT_DIR"
 install -d -o root -g root -m 0700 "$(dirname "$ENV_FILE")"
 if [[ ! -f "$ENV_FILE" ]]; then
@@ -100,6 +131,8 @@ if [[ "$INSTALL_DISK_GUARD" =~ ^(1|true|yes|on)$ ]]; then
     exit 75
   fi
 fi
+
+apply_managed_token_runtime_patches
 
 cd "$PROJECT_DIR/backend"
 npm ci --include=dev
