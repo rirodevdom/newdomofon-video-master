@@ -47,6 +47,15 @@ def patch_gateway(path: Path) -> bool:
 
 def patch_player(path: Path) -> bool:
     text = path.read_text(encoding="utf-8")
+
+    # The v2 seek patch supersedes the first playback-window implementation.
+    # Do not try to match and replace the older fragments after v2 is installed.
+    if (
+        "rawRequestedSeekMs = requestedWindowStartMs + requestedWindowDurationMs / 2" in text
+        and "archiveSeekAbortController" in text
+    ):
+        return False
+
     changed = False
 
     old_seek = """                const requestedWindowStartMs = fromEpochSec * 1000;
