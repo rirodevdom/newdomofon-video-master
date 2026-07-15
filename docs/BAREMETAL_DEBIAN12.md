@@ -1,251 +1,361 @@
-# Debian 12 bare-metal deployment
+# Развёртывание video master на Debian 12
 
-## 1. Подготовка сервера
+Этот документ описывает **отдельный control-plane master**. Master хранит PostgreSQL, пользователей, устройства, камеры, node records, managed tokens и media gateways. Он не записывает камеры и не хранит основной DVR-архив.
 
-```bash
-sudo bash scripts/install-debian12-baremetal.sh
-```
+Актуальная регистрация node:
 
-Скрипт устанавливает:
+1. video node разворачивается первой;
+2. credentials выбираются оператором на node;
+3. на master создаётся запись с теми же значениями;
+4. master ничего не генерирует.
 
-```txt
+Подробно: [MANUAL_NODE_REGISTRATION.md](MANUAL_NODE_REGISTRATION.md).
+
+Справочник `.env`: [ENVIRONMENT.md](ENVIRONMENT.md).
+
+## 1. Требования
+
+```text
+Debian 12 x86_64
 Node.js 22
-PostgreSQL
-nginx
+PostgreSQL 15
+Nginx
 FFmpeg
-nftables
-build tools
-rsync/jq/openssl/git/unzip
+MediaMTX для RTSP gateway
+2–4 vCPU и 4–8 GB RAM — рекомендуемый минимум
+20–40 GB system SSD
+DNS record на master
+Europe/Moscow на master и всех node
 ```
 
-## 2. Размещение проекта
+Публичные порты:
 
-Рекомендуемый путь:
-
-```txt
-/opt/newdomofon-video
+```text
+22/tcp    SSH только доверенным адресам
+80/tcp    HTTP redirect и ACME
+443/tcp   frontend, API и HTTPS media
+8554/tcp  RTSP gateway, желательно VPN/allowlist
 ```
+
+Локальные services используют порты `3000`, `3082–3086`, `5432` и `9997`.
+
+## 2. Подготовка Debian
+
+Команды выполняются от `root`:
 
 ```bash
-sudo mkdir -p /opt/newdomofon-video
-sudo chown -R "$USER:$USER" /opt/newdomofon-video
+apt-get update
+apt-get dist-upgrade -y
+apt-get install -y git ca-certificates curl openssl jq rsync
+
+timedatectl set-timezone Europe/Moscow
+systemctl enable --now systemd-timesyncd
+
+timedatectl status
+date '+%Y-%m-%d %H:%M:%S %Z %z'
 ```
 
-## 3. Первый деплой
+## 3. Получение проекта
 
 ```bash
-cd /opt/newdomofon-video
-sudo PROJECT_DIR=/opt/newdomofon-video bash scripts/deploy-debian12-baremetal.sh
-```
+install -d -m 0755 /opt
+git clone \
+  https://github.com/rirodevdom/newdomofon-video-master.git \
+  /opt/newdomofon-video-master
 
-Что делает deploy:
+cd /opt/newdomofon-video-master
+git switch main
+git pull --ff-only origin main
 
-```txt
-1. создаёт /etc/newdomofon-video/app.env;
-2. генерирует JWT_SECRET, POSTGRES_PASSWORD, ADMIN_PASSWORD;
-3. создаёт PostgreSQL роль newdomofon;
-4. создаёт БД newdomofon_video;
-5. ставит npm-зависимости через npm ci;
-6. собирает backend, dvr-engine и frontend;
-7. применяет миграции;
-8. создаёт admin-пользователя;
-9. копирует frontend/dist в /var/www/newdomofon-video;
-10. ставит systemd units;
-11. ставит nginx site;
-12. запускает backend и dvr services.
-```
-
-## 4. Конфигурация
-
-Основной runtime env:
-
-```txt
-/etc/newdomofon-video/app.env
-```
-
-После изменений в env:
-
-```bash
-sudo systemctl restart newdomofon-video-backend
-sudo systemctl restart newdomofon-video-dvr
-```
-
-## 5. systemd services
-
-```txt
-newdomofon-video-backend.service
-newdomofon-video-dvr.service
-newdomofon-video-srs.service optional
-```
-
-Команды:
-
-```bash
-sudo systemctl status newdomofon-video-backend
-sudo systemctl status newdomofon-video-dvr
-sudo journalctl -u newdomofon-video-backend -f
-sudo journalctl -u newdomofon-video-dvr -f
-```
-
-## 6. nginx
-
-Конфиг:
-
-```txt
-/etc/nginx/sites-available/newdomofon-video.conf
+bash scripts/install-debian12-prereqs.sh
 ```
 
 Проверка:
 
 ```bash
-sudo nginx -t
-sudo systemctl reload nginx
+node --version
+npm --version
+psql --version
+nginx -v
+ffmpeg -version | head -1
 ```
 
-Frontend directory:
+## 4. PostgreSQL
 
-```txt
-/var/www/newdomofon-video
-```
-
-## 7. Firewall
-
-Пример nftables:
-
-```txt
-deploy/nftables/newdomofon-video.nft
-```
-
-Минимально наружу нужны:
-
-```txt
-22/tcp
-80/tcp
-443/tcp
-```
-
-SRS/WebRTC порты открывать только если реально используешь SRS:
-
-```txt
-1935/tcp RTMP
-1985/tcp SRS API
-8088/tcp SRS HTTP
-8000/udp WebRTC
-```
-
-Применение примера:
+Сгенерируйте локальный пароль и создайте role/database. Не публикуйте значение команды:
 
 ```bash
-sudo cp deploy/nftables/newdomofon-video.nft /etc/nftables.conf
-sudo nft -c -f /etc/nftables.conf
-sudo systemctl reload nftables
+DB_PASSWORD="$(openssl rand -base64 36 | tr -d '\n' | tr '/+' '_-')"
+
+sudo -u postgres psql -v ON_ERROR_STOP=1 <<SQL
+CREATE ROLE newdomofon LOGIN PASSWORD '${DB_PASSWORD}';
+CREATE DATABASE newdomofon_video OWNER newdomofon;
+SQL
 ```
 
-## 8. Backup
+Если role/database уже существуют, используйте существующие credentials и не выполняйте `CREATE` повторно.
+
+## 5. Production environment
+
+Шаблон:
+
+```text
+deploy/env/master.env.example
+```
+
+Рабочий файл:
+
+```text
+/etc/newdomofon-video/app.env
+```
+
+Подготовьте локально минимум:
+
+```text
+NODE_ENV=production
+BACKEND_PORT=3000
+DATABASE_URL=postgres://...
+JWT_SECRET=...
+ADMIN_LOGIN=admin
+ADMIN_PASSWORD=...
+CORS_ORIGIN=https://video.example.com
+TRUST_PROXY=true
+APP_PUBLIC_URL=https://video.example.com
+SMARTYARD_PUBLIC_BASE_URL=https://video.example.com
+INTERNAL_DVR_SECRET=...
+PLAYBACK_TOKEN_TTL_SECONDS=900
+NODE_REGISTRATION_TOKEN=
+```
+
+`NODE_REGISTRATION_TOKEN` оставляется пустым: legacy self-registration в актуальной ручной схеме не используется.
+
+Node-specific `DVR_NODE_ID`, `DVR_NODE_TOKEN` и `DVR_NODE_MEDIA_SECRET` **не записываются** в master `app.env`; они вводятся через UI и сохраняются в PostgreSQL.
+
+Генерация локальных master secrets:
 
 ```bash
-sudo bash scripts/backup-postgres.sh
+JWT_SECRET="$(openssl rand -hex 48)"
+ADMIN_PASSWORD="$(openssl rand -base64 36 | tr -d '\n')"
+INTERNAL_DVR_SECRET="$(openssl rand -hex 32)"
 ```
 
-Файлы:
-
-```txt
-/var/backups/newdomofon-video/newdomofon_video-YYYYMMDD-HHMMSS.sql.gz
-```
-
-## 9. Диагностика
+Права:
 
 ```bash
-bash scripts/doctor-baremetal.sh
+install -d -o root -g newdomofon -m 0750 /etc/newdomofon-video
+chown root:newdomofon /etc/newdomofon-video/app.env
+chmod 0640 /etc/newdomofon-video/app.env
 ```
 
-Проверяются:
+Каждая переменная описана в [ENVIRONMENT.md](ENVIRONMENT.md).
 
-```txt
-Node.js
-npm
-FFmpeg
-PostgreSQL service
-nginx service
-backend service
-dvr service
-backend /api/health
-dvr /health
-frontend через nginx
-```
-
-## 10. Отдельный диск под архив
-
-Лучший вариант — смонтировать диск прямо в:
-
-```txt
-/var/lib/newdomofon-video/dvr
-```
-
-Пример:
+## 6. Первый deploy
 
 ```bash
-sudo systemctl stop newdomofon-video-dvr
-sudo rsync -a /var/lib/newdomofon-video/dvr/ /mnt/new-disk/dvr/
-sudo mount /dev/sdX1 /var/lib/newdomofon-video/dvr
-sudo chown -R newdomofon:newdomofon /var/lib/newdomofon-video/dvr
-sudo systemctl start newdomofon-video-dvr
+cd /opt/newdomofon-video-master
+
+PROJECT_DIR=/opt/newdomofon-video-master \
+ENV_FILE=/etc/newdomofon-video/app.env \
+INSTALL_DISK_GUARD=1 \
+INSTALL_JOURNAL_LIMITS=1 \
+INSTALL_RTSP_GATEWAY=1 \
+  bash scripts/deploy-master.sh
 ```
 
-## 11. Обновление
+Deploy:
+
+- собирает backend/frontend;
+- применяет migrations и seed;
+- публикует frontend;
+- устанавливает systemd units и Nginx;
+- запускает SmartYard/media/events gateways;
+- устанавливает disk guard;
+- устанавливает MediaMTX RTSP gateway;
+- отключает DVR recorder на strict master.
+
+## 7. Nginx, DNS и TLS
 
 ```bash
-cd /opt/newdomofon-video
-sudo PROJECT_DIR=/opt/newdomofon-video bash scripts/update-baremetal.sh
+export MASTER_DOMAIN=video.example.com
+
+sed -i \
+  "s/server_name _;/server_name ${MASTER_DOMAIN};/" \
+  /etc/nginx/sites-available/newdomofon-video.conf
+
+nginx -t
+systemctl reload nginx
+
+apt-get install -y certbot python3-certbot-nginx
+certbot --nginx -d "$MASTER_DOMAIN"
+certbot renew --dry-run
 ```
 
-## 12. Удаление
-
-Осторожно: команды ниже не удаляют PostgreSQL package, но останавливают сервисы проекта.
+После Certbot не заменяйте production site без backup. Проверяйте:
 
 ```bash
-sudo systemctl disable --now newdomofon-video-backend newdomofon-video-dvr
-sudo rm -f /etc/systemd/system/newdomofon-video-backend.service
-sudo rm -f /etc/systemd/system/newdomofon-video-dvr.service
-sudo rm -f /etc/nginx/sites-enabled/newdomofon-video.conf
-sudo systemctl daemon-reload
-sudo systemctl reload nginx
+nginx -t
+curl -fsS http://127.0.0.1:3000/api/health | jq
 ```
 
-## Если deploy завис на `Building backend`
-
-Скрипт на этом этапе выполняет `npm ci` в каталоге `backend`. На слабом сервере или при проблемах с доступом к `registry.npmjs.org` это может выглядеть как зависание.
-
-В исправленной версии deploy-скрипт:
-
-- проверяет доступность npm registry до сборки;
-- пишет подробные логи в `/var/log/newdomofon-video/build-*.log`;
-- запускает `npm ci` с `--foreground-scripts`, чтобы были видны postinstall/build scripts;
-- ограничивает `npm ci` таймаутом 45 минут, а `npm run build` — 30 минут;
-- показывает понятную ошибку вместо бесконечного ожидания.
-
-Ручная диагностика:
+## 8. Проверка master
 
 ```bash
-cd /opt/newdomofon-video
-sudo PROJECT_DIR=/opt/newdomofon-video bash scripts/build-debug.sh backend
+systemctl is-active newdomofon-video-backend.service
+systemctl is-active newdomofon-smartyard-compat.service
+systemctl is-active newdomofon-video-rtsp-gateway.service
+
+curl -fsS http://127.0.0.1:3000/api/health | jq
+curl -fsS http://127.0.0.1:3082/health | jq
+
+ss -lntp | grep -E ':(3000|3082|3083|3084|3085|3086|8554|9997)\b'
+nginx -t
 ```
 
-Проверка сети до npm registry:
+На strict master должно быть отключено:
 
 ```bash
-curl -I https://registry.npmjs.org/
-npm ping --registry=https://registry.npmjs.org/ --loglevel=info
+systemctl disable --now newdomofon-video-dvr.service 2>/dev/null || true
 ```
 
-## Fix: npm ci uses non-public registry URLs
+## 9. Добавление заранее развёрнутой node
 
-If deploy logs contain `packages.applied-caas-gateway...` or another internal registry inside `npm http cache`, run:
+На node:
 
 ```bash
-cd /opt/newdomofon-video
-sudo PROJECT_DIR=/opt/newdomofon-video bash scripts/fix-npm-locks.sh
-sudo PROJECT_DIR=/opt/newdomofon-video bash scripts/deploy-debian12-baremetal.sh
+cat /root/newdomofon-node-master-registration.env
 ```
 
-The deploy script also performs this sanitation automatically before `npm ci`.
+В master откройте:
+
+```text
+Администрирование → Ноды → Создать node
+```
+
+Введите:
+
+```text
+DVR_MASTER_URL
+DVR_NODE_ID
+DVR_NODE_TOKEN
+DVR_NODE_MEDIA_SECRET
+DVR_NODE_PUBLIC_BASE_URL
+DVR_NODE_INTERNAL_URL
+```
+
+Master:
+
+- использует введённый UUID как `dvr_servers.id`;
+- хранит SHA-256 хеш agent token;
+- хранит media secret для внутренних tokens;
+- сохраняет master URL в metadata;
+- не показывает и не генерирует replacement credentials.
+
+После следующего heartbeat node должна стать `online`.
+
+## 10. Добавление устройств и камер
+
+```text
+1. Устройства → Добавить устройство.
+2. Выбрать RTSP / ONVIF / HIKVISION.
+3. Указать network credentials устройства.
+4. Выбрать video node.
+5. Выбрать archive_storage.
+6. Открыть камеры устройства.
+7. Найти/добавить channels.
+8. Проверить recorder на node.
+```
+
+Placement принадлежит устройству: все его камеры наследуют node и archive storage.
+
+## 11. RTSP gateway
+
+Повторная установка:
+
+```bash
+cd /opt/newdomofon-video-master
+
+PROJECT_DIR=/opt/newdomofon-video-master \
+ENV_FILE=/etc/newdomofon-video/app.env \
+  bash scripts/install-rtsp-gateway.sh
+```
+
+Проверка:
+
+```bash
+systemctl status newdomofon-video-rtsp-gateway.service --no-pager
+ss -lntp | grep ':8554'
+grep -E '^RTSP_(GATEWAY_ENABLED|PUBLIC_HOST|PUBLIC_PORT|PUBLIC_URL_TEMPLATE|MEDIAMTX_VERSION)=' \
+  /etc/newdomofon-video/app.env
+```
+
+Сначала обновляйте node, затем master, потому что MediaMTX использует relay endpoint node.
+
+## 12. Безопасное обновление
+
+```bash
+cd /opt/newdomofon-video-master
+
+STAMP="$(date +%Y%m%d-%H%M%S)"
+BACKUP="/opt/newdomofon-video-migration-backups/master-update-$STAMP"
+install -d -m 0750 "$BACKUP"
+
+cp -a /etc/newdomofon-video/app.env "$BACKUP/app.env"
+cp -a /etc/nginx/sites-available/newdomofon-video.conf "$BACKUP/" 2>/dev/null || true
+
+set -a
+. /etc/newdomofon-video/app.env
+set +a
+pg_dump -Fc "$DATABASE_URL" >"$BACKUP/postgresql.dump"
+
+git status --short >"$BACKUP/git-status.txt"
+git diff --binary >"$BACKUP/worktree.patch"
+git stash push -u -m "before-master-update-$STAMP" || true
+
+git fetch --prune origin
+git switch main
+git reset --hard origin/main
+
+PROJECT_DIR=/opt/newdomofon-video-master \
+ENV_FILE=/etc/newdomofon-video/app.env \
+INSTALL_DISK_GUARD=1 \
+INSTALL_JOURNAL_LIMITS=1 \
+INSTALL_RTSP_GATEWAY=1 \
+  bash scripts/deploy-master.sh
+```
+
+Не восстанавливайте старый stash автоматически.
+
+## 13. Backup
+
+```bash
+STAMP="$(date +%Y%m%d-%H%M%S)"
+BACKUP="/opt/newdomofon-video-backups/master-$STAMP"
+install -d -m 0750 "$BACKUP"
+
+cp -a /etc/newdomofon-video "$BACKUP/"
+cp -a /etc/nginx/sites-available/newdomofon-video.conf "$BACKUP/" 2>/dev/null || true
+
+set -a
+. /etc/newdomofon-video/app.env
+set +a
+pg_dump -Fc "$DATABASE_URL" >"$BACKUP/newdomofon_video.dump"
+
+git -C /opt/newdomofon-video-master rev-parse HEAD \
+  >"$BACKUP/git-commit.txt"
+```
+
+Backup содержит secrets и должен храниться с `0600/0750`.
+
+## 14. Диагностика
+
+```bash
+systemctl --no-pager --full status newdomofon-video-backend.service
+journalctl -u newdomofon-video-backend.service -n 300 --no-pager
+journalctl -u newdomofon-smartyard-compat.service -n 300 --no-pager
+journalctl -u newdomofon-video-rtsp-gateway.service -n 300 --no-pager
+curl -fsS http://127.0.0.1:3000/api/health | jq
+cat /run/newdomofon-video/master-disk-state.json | jq
+nginx -t
+```
+
+При node `warning/offline` сначала проверяйте DVR service и heartbeat на самой node, затем `last_seen_at` в PostgreSQL master.
