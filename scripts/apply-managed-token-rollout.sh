@@ -108,15 +108,23 @@ case "$ROLE" in
     set +a
     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
       SELECT t.id, t.name, t.is_active, t.expires_at,
-             count(a.camera_id) AS assigned_cameras
+             count(a.camera_id) AS fallback_cameras
         FROM managed_camera_tokens t
         LEFT JOIN managed_camera_token_cameras a ON a.token_id = t.id
        WHERE t.id = '00000000-0000-4000-8000-000000000001'::uuid
        GROUP BY t.id, t.name, t.is_active, t.expires_at;
-      SELECT camera_id, count(*) AS token_count
-        FROM managed_camera_token_cameras
-       GROUP BY camera_id
-      HAVING count(*) <> 1;
+
+      SELECT c.id AS camera_without_any_token, c.name, c.stream_name
+        FROM cameras c
+       WHERE NOT EXISTS (
+         SELECT 1 FROM managed_camera_token_cameras a WHERE a.camera_id = c.id
+       );
+
+      SELECT a.camera_id AS camera_with_system_and_custom
+        FROM managed_camera_token_cameras a
+       GROUP BY a.camera_id
+      HAVING bool_or(a.token_id = '00000000-0000-4000-8000-000000000001'::uuid)
+         AND bool_or(a.token_id <> '00000000-0000-4000-8000-000000000001'::uuid);
     "
     ;;
 
