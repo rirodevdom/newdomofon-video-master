@@ -5,14 +5,18 @@ Master больше не создаёт `DVR_NODE_ID`, `DVR_NODE_TOKEN` и `DVR_
 Правильный порядок:
 
 1. развернуть node;
-2. вручную выбрать UUID, agent token и media secret;
-3. сохранить значения на node;
+2. вручную выбрать на node master URL, UUID, agent token, media secret и URLs;
+3. сохранить значения в `app.env` node;
 4. создать на master запись с точно такими же значениями;
 5. дождаться heartbeat.
 
-## 1. Получение значений с node
+Master `.env`: [ENVIRONMENT.md](ENVIRONMENT.md).
 
-После запуска `scripts/deploy-node.sh` на node создаётся root-only файл:
+Node `.env` подробно описан в `newdomofon-video-node/docs/ENVIRONMENT.md`.
+
+## 1. Получите значения с node
+
+После `scripts/deploy-node.sh` на node создаётся root-only файл:
 
 ```text
 /root/newdomofon-node-master-registration.env
@@ -29,13 +33,21 @@ DVR_NODE_PUBLIC_BASE_URL=...
 DVR_NODE_INTERNAL_URL=...
 ```
 
+Права должны быть:
+
+```text
+root:root 0600
+```
+
 Просмотр:
 
 ```bash
-sudo cat /root/newdomofon-node-master-registration.env
+cat /root/newdomofon-node-master-registration.env
 ```
 
-## 2. Создание записи на master
+Не отправляйте файл в общий чат, тикет или незащищённое хранилище.
+
+## 2. Создайте запись на master
 
 Откройте:
 
@@ -43,31 +55,58 @@ sudo cat /root/newdomofon-node-master-registration.env
 Администрирование → Ноды → Создать node
 ```
 
-Введите все значения из файла регистрации:
+Введите:
 
-- название node;
-- `DVR_MASTER_URL`;
-- `DVR_NODE_ID`;
-- `DVR_NODE_TOKEN`;
-- `DVR_NODE_MEDIA_SECRET`;
-- `DVR_NODE_PUBLIC_BASE_URL`;
-- `DVR_NODE_INTERNAL_URL`;
-- признак активности.
+| Поле | Что вводить |
+|---|---|
+| Название node | Понятное имя, например `video-node1`. |
+| `DVR_MASTER_URL` | Точное значение из node `app.env`. Поле предварительно заполнено текущим origin, но редактируется. |
+| `DVR_NODE_ID` | UUID, выбранный при установке node. |
+| `DVR_NODE_TOKEN` | Agent token из node. |
+| `DVR_NODE_MEDIA_SECRET` | Media secret из node. |
+| `DVR_NODE_PUBLIC_BASE_URL` | Публичный/base URL node. |
+| `DVR_NODE_INTERNAL_URL` | Private URL DVR engine, обычно `http://IP:3010`. |
+| Активна | Включить для приёма heartbeat/config. |
 
-Поле `DVR_MASTER_URL` предварительно заполняется адресом открытого master, но остаётся редактируемым. Введённое значение сохраняется в metadata записи node для проверки конфигурации.
+Все значения должны совпадать посимвольно.
 
-## 3. Хранение credentials
+## 3. Что сохраняет master
 
 Master сохраняет:
 
-- введённый `DVR_NODE_ID` как UUID записи `dvr_servers.id`;
-- SHA-256 хеш введённого `DVR_NODE_TOKEN` в `agent_token_hash`;
-- введённый `DVR_NODE_MEDIA_SECRET` в `media_secret`;
-- введённый `DVR_MASTER_URL` в `capabilities.manual_registration.master_url`.
+- `DVR_NODE_ID` как UUID `dvr_servers.id`;
+- SHA-256 хеш `DVR_NODE_TOKEN` в `agent_token_hash`;
+- `DVR_NODE_MEDIA_SECRET` в `media_secret`;
+- `DVR_MASTER_URL` в `capabilities.manual_registration.master_url`;
+- public/internal URL и название node.
 
-Исходный agent token не хранится и не может быть восстановлен из master.
+Master не сохраняет исходный agent token и не может восстановить его из хеша.
 
-## 4. Проверка совпадения
+Master не возвращает и не генерирует replacement credentials.
+
+## 4. Что не нужно добавлять в master `app.env`
+
+Не добавляйте туда:
+
+```text
+DVR_NODE_ID
+DVR_NODE_TOKEN
+DVR_NODE_MEDIA_SECRET
+DVR_NODE_PUBLIC_BASE_URL
+DVR_NODE_INTERNAL_URL
+```
+
+Это параметры конкретной записи node в PostgreSQL, а не глобальная конфигурация master.
+
+Legacy:
+
+```text
+NODE_REGISTRATION_TOKEN=
+```
+
+оставляется пустым, потому что self-registration не используется.
+
+## 5. Проверка node без вывода secret
 
 На node:
 
@@ -82,25 +121,98 @@ printf 'DVR_NODE_PUBLIC_BASE_URL=%s\n' "$DVR_NODE_PUBLIC_BASE_URL"
 printf 'DVR_NODE_INTERNAL_URL=%s\n' "$DVR_NODE_INTERNAL_URL"
 ```
 
-Секреты не выводите в общий журнал.
+Проверка наличия secret без вывода:
 
-После создания записи на master:
+```bash
+for key in DVR_NODE_TOKEN DVR_NODE_MEDIA_SECRET; do
+  if grep -qE "^${key}=.+" /etc/newdomofon-video/app.env; then
+    echo "$key=SET"
+  else
+    echo "$key=MISSING"
+  fi
+done
+```
+
+## 6. Проверка heartbeat
+
+На node:
 
 ```bash
 systemctl restart newdomofon-video-dvr.service
-journalctl -u newdomofon-video-dvr.service -f --no-pager
+sleep 25
+
+systemctl is-active newdomofon-video-dvr.service
+curl -fsS http://127.0.0.1:3010/health | jq
+journalctl -u newdomofon-video-dvr.service --since '-5 minutes' --no-pager
 ```
 
-Node должна перейти в `online` после следующего успешного heartbeat.
+В master UI должны обновиться:
 
-## 5. Ручная смена credentials
+```text
+status=online
+last_seen_at
+version
+storage
+capabilities
+```
+
+Порог UI:
+
+```text
+online   heartbeat моложе 60 секунд
+warning  60–180 секунд
+offline  старше 180 секунд или отсутствует
+```
+
+## 7. Если node не становится online
+
+На node найдите:
+
+```bash
+journalctl \
+  -u newdomofon-video-dvr.service \
+  --since '-10 minutes' \
+  --no-pager \
+  | grep -Ei 'heartbeat|401|403|404|invalid node|timeout|ECONNREFUSED|ENOTFOUND' \
+  || true
+```
+
+Причины:
+
+- UUID отличается;
+- agent token отличается;
+- запись node выключена;
+- `DVR_MASTER_URL` неверен;
+- DNS/TLS/network недоступны;
+- DVR process node не работает.
+
+`DVR_NODE_MEDIA_SECRET` обычно не влияет на heartbeat, но обязан совпадать для media playback.
+
+## 8. Существующая node после обновления master
+
+Не удаляйте и не создавайте её заново. Существующие `id`, `agent_token_hash` и `media_secret` остаются валидными.
+
+Новая форма применяется:
+
+- к следующим node;
+- при полном пересоздании записи;
+- при ручной смене credentials.
+
+## 9. Ручная смена credentials
 
 Master не генерирует новые credentials при ротации.
 
-1. выберите новый `DVR_NODE_TOKEN` и `DVR_NODE_MEDIA_SECRET`;
-2. внесите их в `/etc/newdomofon-video/app.env` на node;
-3. в master откройте действие «Задать новые credentials»;
-4. введите те же значения;
-5. перезапустите DVR-сервис node.
+Порядок:
 
-Agent token и media secret должны совпадать посимвольно.
+1. выберите новый `DVR_NODE_TOKEN`;
+2. выберите новый `DVR_NODE_MEDIA_SECRET`;
+3. внесите их в `/etc/newdomofon-video/app.env` node;
+4. на master откройте «Действия → Задать новые credentials»;
+5. введите те же значения;
+6. перезапустите DVR node.
+
+```bash
+systemctl restart newdomofon-video-dvr.service
+```
+
+Чтобы уменьшить разрыв связи, подготовьте обе стороны заранее и выполните изменения последовательно в одной maintenance window.
