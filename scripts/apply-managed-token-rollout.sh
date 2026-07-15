@@ -31,14 +31,23 @@ install -d -m 0750 "$BACKUP_ROOT"
 
 update_checkout() {
   local dir="$1"
+  local remote_ref="refs/remotes/origin/${TARGET_REF}"
   [[ -d "$dir/.git" ]] || fail "Git checkout not found: $dir"
   git -C "$dir" status --short >"$BACKUP_ROOT/$(basename "$dir")-git-status.txt"
   git -C "$dir" diff --binary >"$BACKUP_ROOT/$(basename "$dir")-worktree.patch"
-  git -C "$dir" fetch origin "$TARGET_REF"
   git -C "$dir" stash push -u -m "before-managed-token-rollout-$STAMP" || true
   git -C "$dir" stash list >"$BACKUP_ROOT/$(basename "$dir")-git-stash-list.txt"
-  git -C "$dir" switch -C "$TARGET_REF" "origin/$TARGET_REF"
-  git -C "$dir" reset --hard "origin/$TARGET_REF"
+
+  # An ordinary `git fetch origin branch/name` updates only FETCH_HEAD when the
+  # remote fetch refspec does not cover that branch. Fetch explicitly into the
+  # remote-tracking ref so slash branch names work on minimal production clones.
+  git -C "$dir" fetch --prune origin \
+    "+refs/heads/${TARGET_REF}:${remote_ref}"
+  git -C "$dir" show-ref --verify --quiet "$remote_ref" \
+    || fail "Remote branch origin/${TARGET_REF} was not fetched"
+
+  git -C "$dir" switch -C "$TARGET_REF" "$remote_ref"
+  git -C "$dir" reset --hard "$remote_ref"
   git -C "$dir" log -1 --oneline
 }
 
