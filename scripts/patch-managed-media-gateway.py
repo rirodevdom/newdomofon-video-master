@@ -18,13 +18,18 @@ def patch_camera_prefix(path: Path) -> bool:
     if CAMERA_PREFIX_LINE in text:
         return False
 
-    anchor = "  if (rest.startsWith('dvr-archive/')) rest = rest.slice('dvr-archive/'.length);\n"
-    if anchor not in text:
-        raise RuntimeError(f"camera-prefix anchor not found in {path}")
+    anchors = (
+        "  if (rest.startsWith('dvr-archive/')) rest = rest.slice('dvr-archive/'.length);\n",
+        "  if (rest.startsWith('api/dvr-archive/')) rest = rest.slice('api/dvr-archive/'.length);\n",
+        "  if (rest.startsWith('api/media/')) rest = rest.slice('api/media/'.length);\n",
+    )
+    for anchor in anchors:
+        if anchor in text:
+            text = text.replace(anchor, anchor + CAMERA_PREFIX_LINE, 1)
+            path.write_text(text, encoding="utf-8")
+            return True
 
-    text = text.replace(anchor, anchor + CAMERA_PREFIX_LINE, 1)
-    path.write_text(text, encoding="utf-8")
-    return True
+    raise RuntimeError(f"camera-prefix anchor not found in {path}")
 
 
 def patch_node_resolver(path: Path) -> bool:
