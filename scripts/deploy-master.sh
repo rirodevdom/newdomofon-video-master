@@ -45,6 +45,30 @@ normalize_project_permissions() {
   PROJECT_DIR="$PROJECT_DIR" bash "$normalizer"
 }
 
+ensure_runtime_secrets() {
+  command -v openssl >/dev/null || {
+    echo "openssl is required to generate runtime secrets" >&2
+    return 1
+  }
+
+  if ! grep -qE '^MANAGED_CAMERA_TOKEN_SECRET=.+$' "$ENV_FILE"; then
+    [[ -n "${JWT_SECRET:-}" ]] || {
+      echo "JWT_SECRET is required to initialize MANAGED_CAMERA_TOKEN_SECRET" >&2
+      return 1
+    }
+    sed -i '/^MANAGED_CAMERA_TOKEN_SECRET=/d' "$ENV_FILE"
+    printf '\nMANAGED_CAMERA_TOKEN_SECRET=%s\n' "$JWT_SECRET" >>"$ENV_FILE"
+  fi
+
+  if ! grep -qE '^INTERNAL_DVR_SECRET=.+$' "$ENV_FILE"; then
+    sed -i '/^INTERNAL_DVR_SECRET=/d' "$ENV_FILE"
+    printf '\nINTERNAL_DVR_SECRET=%s\n' "$(openssl rand -hex 32)" >>"$ENV_FILE"
+  fi
+
+  chown root:root "$ENV_FILE"
+  chmod 0600 "$ENV_FILE"
+}
+
 cd "$PROJECT_DIR"
 install -d -o root -g root -m 0700 "$(dirname "$ENV_FILE")"
 if [[ ! -f "$ENV_FILE" ]]; then
@@ -57,6 +81,12 @@ fi
 chown root:root "$ENV_FILE"
 chmod 0600 "$ENV_FILE"
 
+set -a
+# shellcheck disable=SC1090
+. "$ENV_FILE"
+set +a
+
+ensure_runtime_secrets
 set -a
 # shellcheck disable=SC1090
 . "$ENV_FILE"
@@ -84,6 +114,18 @@ if [[ -f "$PROJECT_DIR/scripts/patch-system-managed-token-ui.py" ]]; then
     exit 1
   }
   python3 "$PROJECT_DIR/scripts/patch-system-managed-token-ui.py" --project-dir "$PROJECT_DIR"
+fi
+
+if [[ -f "$PROJECT_DIR/scripts/patch-managed-media-gateway.py" ]]; then
+  command -v python3 >/dev/null || {
+    echo "python3 is required for managed media gateway patch" >&2
+    exit 1
+  }
+  python3 "$PROJECT_DIR/scripts/patch-managed-media-gateway.py" --project-dir "$PROJECT_DIR"
+  node --check "$PROJECT_DIR/smartyard-compat-proxy/server-node-aware.js"
+  node --check "$PROJECT_DIR/smartyard-compat-proxy/server-events-gateway.js"
+  node --check "$PROJECT_DIR/smartyard-compat-proxy/server-preview-gateway.js"
+  node --check "$PROJECT_DIR/smartyard-compat-proxy/server-formats-gateway.js"
 fi
 
 cd "$PROJECT_DIR/frontend"
