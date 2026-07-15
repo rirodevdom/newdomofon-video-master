@@ -38,9 +38,8 @@ update_checkout() {
   git -C "$dir" stash push -u -m "before-managed-token-rollout-$STAMP" || true
   git -C "$dir" stash list >"$BACKUP_ROOT/$(basename "$dir")-git-stash-list.txt"
 
-  # An ordinary `git fetch origin branch/name` updates only FETCH_HEAD when the
-  # remote fetch refspec does not cover that branch. Fetch explicitly into the
-  # remote-tracking ref so slash branch names work on minimal production clones.
+  # Fetch explicitly into a remote-tracking ref so slash branch names also work
+  # on minimal production clones whose fetch refspec covers only the main branch.
   git -C "$dir" fetch --prune origin \
     "+refs/heads/${TARGET_REF}:${remote_ref}"
   git -C "$dir" show-ref --verify --quiet "$remote_ref" \
@@ -55,10 +54,12 @@ case "$ROLE" in
   master)
     command -v python3 >/dev/null || fail "python3 is required"
     command -v npm >/dev/null || fail "npm is required"
+    command -v node >/dev/null || fail "node is required"
     command -v rsync >/dev/null || fail "rsync is required"
     command -v pg_dump >/dev/null || fail "pg_dump is required"
     command -v psql >/dev/null || fail "psql is required"
     command -v nginx >/dev/null || fail "nginx is required"
+    command -v openssl >/dev/null || fail "openssl is required"
 
     log "Backing up master configuration and PostgreSQL"
     [[ -f "$ENV_FILE" ]] || fail "Environment file not found: $ENV_FILE"
@@ -73,15 +74,26 @@ case "$ROLE" in
     log "Updating master checkout"
     update_checkout "$MASTER_DIR"
 
-    log "Preserving the managed-token signing secret"
-    if ! grep -q '^MANAGED_CAMERA_TOKEN_SECRET=' "$ENV_FILE"; then
+    log "Preserving managed-token and internal gateway secrets"
+    if ! grep -qE '^MANAGED_CAMERA_TOKEN_SECRET=.+$' "$ENV_FILE"; then
       [[ -n "${JWT_SECRET:-}" ]] || fail "JWT_SECRET is missing"
+      sed -i '/^MANAGED_CAMERA_TOKEN_SECRET=/d' "$ENV_FILE"
       printf '\nMANAGED_CAMERA_TOKEN_SECRET=%s\n' "$JWT_SECRET" >>"$ENV_FILE"
-      chmod 0640 "$ENV_FILE"
     fi
+    if ! grep -qE '^INTERNAL_DVR_SECRET=.+$' "$ENV_FILE"; then
+      sed -i '/^INTERNAL_DVR_SECRET=/d' "$ENV_FILE"
+      printf '\nINTERNAL_DVR_SECRET=%s\n' "$(openssl rand -hex 32)" >>"$ENV_FILE"
+    fi
+    chown root:root "$ENV_FILE"
+    chmod 0600 "$ENV_FILE"
 
-    log "Applying managed-token UI source patch"
+    log "Applying managed-token UI and media-gateway source patches"
     python3 "$MASTER_DIR/scripts/patch-system-managed-token-ui.py" --project-dir "$MASTER_DIR"
+    python3 "$MASTER_DIR/scripts/patch-managed-media-gateway.py" --project-dir "$MASTER_DIR"
+    node --check "$MASTER_DIR/smartyard-compat-proxy/server-node-aware.js"
+    node --check "$MASTER_DIR/smartyard-compat-proxy/server-events-gateway.js"
+    node --check "$MASTER_DIR/smartyard-compat-proxy/server-preview-gateway.js"
+    node --check "$MASTER_DIR/smartyard-compat-proxy/server-formats-gateway.js"
 
     log "Building backend and frontend"
     cd "$MASTER_DIR/backend"
@@ -95,8 +107,14 @@ case "$ROLE" in
     install -d -m 0755 /var/www/newdomofon-video
     rsync -a --delete dist/ /var/www/newdomofon-video/
 
-    log "Restarting master services"
+    log "Installing and restarting master services"
+    install -m 0644 \
+      "$MASTER_DIR/deploy/systemd/newdomofon-smartyard-compat.service" \
+      /etc/systemd/system/newdomofon-smartyard-compat.service
+    systemctl daemon-reload
     systemctl restart newdomofon-video-backend.service
+    systemctl enable newdomofon-smartyard-compat.service >/dev/null 2>&1 || true
+    systemctl restart newdomofon-smartyard-compat.service
     for service in \
       newdomofon-video-smartyard-gateway.service \
       newdomofon-video-node-media-gateway.service \
@@ -108,10 +126,20 @@ case "$ROLE" in
     nginx -t
     systemctl reload nginx
 
-    log "Verifying master"
+    log "Verifying master and managed media gateway"
     systemctl --no-pager --full status newdomofon-video-backend.service | sed -n '1,20p'
+    systemctl --no-pager --full status newdomofon-smartyard-compat.service | sed -n '1,24p'
     curl -fsS http://127.0.0.1:3000/api/health
     echo
+    curl -fsS http://127.0.0.1:3082/health | tee "$BACKUP_ROOT/smartyard-health.json"
+    echo
+    curl -fsS http://127.0.0.1:3084/health | tee "$BACKUP_ROOT/smartyard-node-aware-health.json"
+    echo
+    grep -q 'v301-node-aware-smartyard-gateway' "$BACKUP_ROOT/smartyard-node-aware-health.json" \
+      || fail "Port 3084 is not running the node-aware SmartYard gateway"
+    grep -q '"internal_secret_configured":true' "$BACKUP_ROOT/smartyard-node-aware-health.json" \
+      || fail "Node-aware SmartYard gateway has no INTERNAL_DVR_SECRET"
+
     set -a
     . "$ENV_FILE"
     set +a
