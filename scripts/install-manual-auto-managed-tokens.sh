@@ -19,7 +19,9 @@ for command in python3 node npm rsync systemctl curl psql pg_dump; do
 done
 
 PATCHER="$PROJECT_DIR/scripts/patch-manual-auto-managed-tokens.py"
+COLLISION_FIX="$PROJECT_DIR/scripts/fix-manual-token-resolver-variable.py"
 [[ -f "$PATCHER" ]] || fail "Feature patcher is missing: $PATCHER"
+[[ -f "$COLLISION_FIX" ]] || fail "Resolver collision fix is missing: $COLLISION_FIX"
 [[ -f "$PROJECT_DIR/backend/migrations/094_manual_auto_managed_camera_tokens.sql" ]] \
   || fail "Migration 094 is missing"
 [[ -f "$PROJECT_DIR/backend/src/services/manualManagedCameraToken.ts" ]] \
@@ -42,8 +44,10 @@ log "Backing up PostgreSQL"
 pg_dump -Fc "$DATABASE_URL" >"$BACKUP_ROOT/postgresql.dump"
 
 log "Checking and applying source patch"
-python3 -m py_compile "$PATCHER"
+python3 -m py_compile "$PATCHER" "$COLLISION_FIX"
+python3 "$COLLISION_FIX" --project-dir "$PROJECT_DIR"
 python3 "$PATCHER" --project-dir "$PROJECT_DIR"
+python3 "$COLLISION_FIX" --project-dir "$PROJECT_DIR"
 
 log "Building and migrating backend"
 cd "$PROJECT_DIR/backend"
