@@ -225,8 +225,6 @@ def patch_admin_links(path: Path) -> None:
         "системный токен. Первая пользовательская привязка удаляет системный fallback; после удаления "
         "последнего пользовательского токена fallback возвращается автоматически."
     )
-    if desired_info in text:
-        return
 
     original_info = (
         "Нажмите на камеру, затем выберите один из уже привязанных токенов или добавьте новый. Ссылки "
@@ -238,18 +236,37 @@ def patch_admin_links(path: Path) -> None:
         "выбранный пользовательский токен заменяет его. Live и архив используют этот текущий токен."
     )
 
-    if old_single_info in text:
-        text = text.replace(old_single_info, desired_info, 1)
-        text = text.replace("Текущий токен", "Привязанные токены", 1)
-        text = text.replace("Заменить текущий токен", "Добавить токен", 1)
-        text = text.replace("Заменить и показать", "Привязать и показать", 1)
-        text = text.replace(
-            "notify('Текущий токен установлен, ссылки сформированы');",
-            "notify(response.data.assignment_added ? 'Токен привязан, ссылки сформированы' : 'Ссылки сформированы');",
-            1,
+    if desired_info not in text:
+        if old_single_info in text:
+            text = text.replace(old_single_info, desired_info, 1)
+            text = text.replace("Текущий токен", "Привязанные токены", 1)
+            text = text.replace("Заменить текущий токен", "Добавить токен", 1)
+            text = text.replace("Заменить и показать", "Привязать и показать", 1)
+            text = text.replace(
+                "notify('Текущий токен установлен, ссылки сформированы');",
+                "notify(response.data.assignment_added ? 'Токен привязан, ссылки сформированы' : 'Ссылки сформированы');",
+                1,
+            )
+        else:
+            text = replace_once(text, original_info, desired_info, "links fallback info")
+
+    if "const SYSTEM_MANAGED_TOKEN_ID" not in text:
+        text = replace_once(
+            text,
+            "const cameras = ref<any[]>([]);",
+            f"const SYSTEM_MANAGED_TOKEN_ID = '{SYSTEM_TOKEN_ID}';\nconst cameras = ref<any[]>([]);",
+            "admin links system token constant",
         )
-    else:
-        text = replace_once(text, original_info, desired_info, "links fallback info")
+
+    text = replace_once(
+        text,
+        '''  return managedTokens.value
+    .filter((token) => token.scopes?.includes('camera') && !attached.has(token.id))''',
+        '''  return managedTokens.value
+    .filter((token) => token.id !== SYSTEM_MANAGED_TOKEN_ID)
+    .filter((token) => token.scopes?.includes('camera') && !attached.has(token.id))''',
+        "hide system fallback from manual attachment",
+    )
 
     path.write_text(text, encoding="utf-8")
 
