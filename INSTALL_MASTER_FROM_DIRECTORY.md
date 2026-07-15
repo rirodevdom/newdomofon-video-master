@@ -1,245 +1,149 @@
-# Установка NewDomofon Video Master из распакованной папки
+# Установка Video Master из распакованной папки
 
-Этот способ предназначен для случая, когда архив проекта уже самостоятельно распакован в `/root`.
+Этот способ используется, когда source master уже распакован внутри `/root` и Git не нужен.
 
-Исходный код не загружается через `git clone` или `git fetch`. Установщик берёт все файлы из указанной локальной папки, создаёт временный локальный Git source и разворачивает production-копию в:
+Для актуальной схемы запускайте:
 
 ```text
-/opt/newdomofon-video-master
+scripts/install-master-manual-local-root.sh
 ```
 
-## Поддерживаемое расположение
+Wrapper устанавливает strict master, отключает legacy self-registration и не генерирует credentials video node.
 
-Рекомендуемый вариант:
+## 1. Расположение source
+
+Рекомендуется:
 
 ```text
 /root/newdomofon-video-master-main/
 ```
 
-Имя папки может быть любым, например:
-
-```text
-/root/newdomofon-master-20260715/
-/root/video-master-source/
-```
-
-Также поддерживается распаковка непосредственно в `/root`, если там находятся:
-
-```text
-/root/backend/
-/root/frontend/
-/root/scripts/
-/root/deploy/
-```
-
-## Проверка распакованной папки
-
-Пример:
+Проверка:
 
 ```bash
-SOURCE_DIR="/root/newdomofon-video-master-main"
+SOURCE_DIR=/root/newdomofon-video-master-main
 
 test -f "$SOURCE_DIR/backend/package.json"
 test -f "$SOURCE_DIR/frontend/package.json"
-test -f "$SOURCE_DIR/scripts/install-master-from-directory.sh"
-test -f "$SOURCE_DIR/scripts/lib/master-one-shot-install.sh"
-
-echo "Project directory is valid: $SOURCE_DIR"
+test -f "$SOURCE_DIR/scripts/install-master-manual-local-root.sh"
+test -f "$SOURCE_DIR/scripts/install-master-local-root.sh"
 ```
 
-## Самый простой запуск из папки проекта
+Source directory должен находиться внутри `/root`.
+
+## 2. Интерактивный запуск
 
 ```bash
-cd /root/newdomofon-video-master-main
-
-chmod 700 \
-  scripts/install-master-from-directory.sh \
-  scripts/install-master-from-archive.sh \
-  scripts/install-master-one-shot.sh \
-  scripts/lib/master-one-shot-install.sh \
-  scripts/lib/master-one-shot-report.sh
-
-bash scripts/install-master-from-directory.sh
+cd "$SOURCE_DIR"
+bash scripts/install-master-manual-local-root.sh
 ```
 
-Скрипт спросит:
-
-```text
-Master domain or IP:
-Email for Let's Encrypt (optional):
-```
-
-## Неинтерактивная установка
+## 3. DNS/TLS
 
 ```bash
-cd /root/newdomofon-video-master-main
+cd "$SOURCE_DIR"
 
-bash scripts/install-master-from-directory.sh \
+bash scripts/install-master-manual-local-root.sh \
   --domain video.example.ru \
   --email admin@example.ru \
   --admin-login admin
 ```
 
-## Явное указание папки
-
-Команду можно запустить из любого каталога:
+## 4. IP без TLS
 
 ```bash
-bash /root/newdomofon-video-master-main/scripts/install-master-from-directory.sh \
-  --source-dir /root/newdomofon-video-master-main \
-  --domain video.example.ru \
-  --email admin@example.ru \
-  --admin-login admin
-```
+cd "$SOURCE_DIR"
 
-## По IP без TLS
-
-```bash
-bash /root/newdomofon-video-master-main/scripts/install-master-from-directory.sh \
-  --source-dir /root/newdomofon-video-master-main \
+bash scripts/install-master-manual-local-root.sh \
   --domain 10.106.1.30 \
   --no-tls \
   --admin-login admin
 ```
 
-## Автоматический поиск папки
+Wrapper сам передаёт корректный `--source-dir` внутреннему installer. Не добавляйте второй `--source-dir` вручную.
 
-Если отдельный установщик скопирован в `/root`, но `--source-dir` не указан, он автоматически ищет последнюю распакованную копию проекта внутри `/root`.
+## 5. Что происходит с source
 
-Поиск выполняется по обязательным файлам, а не только по имени каталога. Поэтому папка может называться произвольно.
+Распакованная папка не удаляется. Installer:
 
-## Что происходит с исходной папкой
+- копирует source в `/opt/newdomofon-video-master`;
+- исключает `.git`, `.github`, `node_modules` и старые `dist`;
+- сохраняет предыдущую production copy;
+- сохраняет PostgreSQL/config backup;
+- устанавливает backend/frontend/gateways;
+- оставляет `NODE_REGISTRATION_TOKEN` пустым.
 
-Распакованная папка в `/root` не изменяется и не удаляется.
+## 6. Runtime user
 
-Установщик:
+Этот специальный сценарий запускает application units от `root`. PostgreSQL остаётся `postgres`, Nginx worker — `www-data`.
 
-1. проверяет структуру исходников;
-2. копирует их во временный root-only каталог;
-3. исключает `.git`, `node_modules` и старые `dist`;
-4. создаёт локальный Git snapshot;
-5. устанавливает рабочую копию в `/opt/newdomofon-video-master`;
-6. нормализует права production-копии для runtime-пользователя `newdomofon`;
-7. выполняет полный one-shot deploy;
-8. сохраняет данные доступа.
+Обычная установка из Git с пользователем `newdomofon` предпочтительнее. Подробно: [ROOT_RUNTIME_MASTER.md](ROOT_RUNTIME_MASTER.md).
 
-Production checkout получает владельца `root:newdomofon`, каталог проекта имеет режим `0750`, а runtime-файлы доступны группе на чтение и проход. Это предотвращает systemd-ошибку:
+## 7. Проверка результата
 
-```text
-status=200/CHDIR
-Changing to the requested working directory failed: Permission denied
+```bash
+systemctl is-active newdomofon-video-backend.service
+systemctl is-active newdomofon-public-events-proxy.service
+systemctl is-active newdomofon-smartyard-compat.service
+systemctl is-active postgresql
+systemctl is-active nginx
+
+curl -fsS http://127.0.0.1:3000/api/health | jq
+curl -fsS http://127.0.0.1:3082/health | jq
+nginx -t
+
+grep '^NODE_REGISTRATION_TOKEN=' /etc/newdomofon-video/app.env
 ```
 
-Если `/opt/newdomofon-video-master` уже существует, он переносится в:
+Ожидается:
 
 ```text
-/opt/newdomofon-video-master.before-local-source-YYYYMMDD-HHMMSS
+NODE_REGISTRATION_TOKEN=
 ```
 
-PostgreSQL не удаляется. Существующая база сохраняется перед миграциями.
-
-## Итоговые данные
-
-После успешной установки:
+## 8. Файлы доступа
 
 ```text
 /root/newdomofon-master-access.txt
 /root/newdomofon-master-access.json
 ```
 
-Просмотр:
+Wrapper редактирует marker legacy token на:
 
-```bash
-cat /root/newdomofon-master-access.txt
-jq . /root/newdomofon-master-access.json
+```text
+DISABLED_MANUAL_NODE_REGISTRATION
 ```
 
-Там находятся web URL, login/password, PostgreSQL credentials, node registration token, RTSP template, журнал и backup.
+Файлы содержат другие реальные passwords/secrets и должны оставаться `0600`.
 
-## Проверка сервисов
+## 9. Регистрация video node
 
-```bash
-systemctl is-active newdomofon-video-backend.service
-systemctl is-active newdomofon-public-events-proxy.service
-systemctl is-active newdomofon-smartyard-compat.service
-systemctl is-active newdomofon-video-rtsp-gateway.service
-systemctl is-active postgresql
-systemctl is-active nginx
+Node разворачивается отдельно и создаёт:
 
-curl -fsS http://127.0.0.1:3000/api/health | jq .
-curl -fsS http://127.0.0.1:3082/health | jq .
-
-ss -lntp | grep -E ':(3000|3057|3082|3083|3084|3085|3086|5432|8554|9997)\b'
-nginx -t
+```text
+/root/newdomofon-node-master-registration.env
 ```
 
-## Восстановление после status=200/CHDIR
+Все значения из него вводятся в:
 
-На свежем archive с исправлением выполните:
-
-```bash
-PROJECT_DIR=/opt/newdomofon-video-master \
-  bash /opt/newdomofon-video-master/scripts/repair-master-project-permissions.sh
+```text
+Администрирование → Ноды → Создать node
 ```
 
-Ручной эквивалент для старой копии проекта:
+Master не генерирует ID/token/media secret.
+
+## 10. `.env`
+
+Полный справочник: [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md).
+
+## 11. Диагностика
 
 ```bash
-systemctl stop \
-  newdomofon-video-backend.service \
-  newdomofon-public-events-proxy.service \
-  newdomofon-smartyard-compat.service \
-  2>/dev/null || true
+LOG="$(ls -t /root/newdomofon-master-local-root-*.log | head -1)"
+tail -300 "$LOG"
 
-chown -R root:newdomofon /opt/newdomofon-video-master
-chmod -R g+rX,o-rwx /opt/newdomofon-video-master
-chmod 0750 /opt/newdomofon-video-master
-
-if [ -d /opt/newdomofon-video-master/.git ]; then
-  chown -R root:root /opt/newdomofon-video-master/.git
-  chmod -R go-rwx /opt/newdomofon-video-master/.git
-fi
-
-sudo -u newdomofon \
-  test -r /opt/newdomofon-video-master/backend/dist/index.js
-
-systemctl daemon-reload
-systemctl reset-failed newdomofon-video-backend.service || true
-systemctl restart newdomofon-video-backend.service
-```
-
-После этого проверьте:
-
-```bash
-namei -l /opt/newdomofon-video-master/backend/dist/index.js
-curl -fsS http://127.0.0.1:3000/api/health | jq .
-```
-
-## Интернет-зависимости
-
-Исходники проекта не загружаются с GitHub. На чистом сервере интернет всё ещё может требоваться для:
-
-- Debian APT;
-- NodeSource, если Node.js 22.12+ отсутствует;
-- npm registry;
-- Let's Encrypt;
-- MediaMTX, если его archive/binary/cache отсутствует.
-
-MediaMTX можно заранее положить в `/root` или в папку проекта `vendor/`.
-
-## Ошибка установки
-
-Последний журнал:
-
-```bash
-tail -300 "$(ls -t /root/newdomofon-master-install-*.log | head -1)"
-```
-
-Backend:
-
-```bash
 systemctl --no-pager --full status newdomofon-video-backend.service
 journalctl -u newdomofon-video-backend.service -n 300 --no-pager
 ```
 
-Не используйте `--regenerate-secrets` при обычном повторном запуске на уже работающем master.
+Не используйте `--regenerate-secrets` при обычном повторном запуске работающего master.
