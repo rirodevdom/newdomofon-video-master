@@ -15,10 +15,11 @@ done
 
 PATCHER="$PROJECT_DIR/scripts/patch-managed-media-gateway.py"
 ARCHIVE_PATCHER="$PROJECT_DIR/scripts/patch-archive-playback-window.py"
+SEEK_PATCHER="$PROJECT_DIR/scripts/patch-archive-seek-navigation.py"
 GATEWAY="$PROJECT_DIR/smartyard-compat-proxy/server-node-aware.js"
 PLAYER="$PROJECT_DIR/frontend/src/views/PlayerView.vue"
 
-for file in "$PATCHER" "$ARCHIVE_PATCHER" "$GATEWAY" "$PLAYER"; do
+for file in "$PATCHER" "$ARCHIVE_PATCHER" "$SEEK_PATCHER" "$GATEWAY" "$PLAYER"; do
   [[ -f "$file" ]] || fail "Required file is missing: $file"
 done
 
@@ -26,16 +27,19 @@ install -d -m 0750 "$BACKUP_ROOT"
 cp -a "$GATEWAY" "$BACKUP_ROOT/server-node-aware.js.before"
 cp -a "$PLAYER" "$BACKUP_ROOT/PlayerView.vue.before"
 
-log "Applying archive ranges and playback-window fixes"
+log "Applying archive ranges, playback-window and seek-navigation fixes"
 python3 "$PATCHER" --project-dir "$PROJECT_DIR"
 node --check "$GATEWAY"
 
+python3 -m py_compile "$ARCHIVE_PATCHER" "$SEEK_PATCHER" "$PATCHER"
 grep -q "node-archive-ranges" "$GATEWAY" \
   || fail "Archive ranges handler was not installed"
-grep -q "latestAllowedEndMs" "$PLAYER" \
-  || fail "Archive playback end clamp was not installed"
-grep -q "requestedSeekMs = Math.min(requestedWindowStartMs" "$PLAYER" \
-  || fail "Archive playback start calculation was not installed"
+grep -q "rawRequestedSeekMs = requestedWindowStartMs + requestedWindowDurationMs / 2" "$PLAYER" \
+  || fail "Archive selected-point calculation was not installed"
+grep -q "archiveSeekAbortController?.abort()" "$PLAYER" \
+  || fail "Stale archive seek cancellation was not installed"
+grep -q "signal: controller.signal" "$PLAYER" \
+  || fail "Archive request cancellation signal was not installed"
 
 log "Building frontend"
 cd "$PROJECT_DIR/frontend"
