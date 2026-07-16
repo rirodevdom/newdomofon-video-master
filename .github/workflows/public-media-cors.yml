@@ -1,0 +1,63 @@
+name: Public media CORS
+
+on:
+  pull_request:
+    paths:
+      - 'deploy/nginx/newdomofon-video.conf'
+      - 'scripts/repair-public-media-cors.sh'
+      - '.github/workflows/public-media-cors.yml'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate repair script syntax
+        run: bash -n scripts/repair-public-media-cors.sh
+
+      - name: Validate canonical media CORS ownership
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          text = Path('deploy/nginx/newdomofon-video.conf').read_text()
+          match = re.search(
+              r'location\s+~\s+\^/\[\^/\]\+/\(\?:\.\*\\\.\(\?:m3u8[\s\S]*?\n\s*\}',
+              text,
+          )
+          if not match:
+              raise SystemExit('public media location not found')
+
+          block = match.group(0)
+          required = [
+              'proxy_hide_header Access-Control-Allow-Origin;',
+              'proxy_hide_header Access-Control-Allow-Methods;',
+              'proxy_hide_header Access-Control-Allow-Headers;',
+              'proxy_hide_header Access-Control-Expose-Headers;',
+              'add_header Access-Control-Allow-Origin "*" always;',
+          ]
+          for marker in required:
+              if marker not in block:
+                  raise SystemExit(f'missing media CORS marker: {marker}')
+
+          if block.count('proxy_hide_header Access-Control-Allow-Origin;') != 1:
+              raise SystemExit('media upstream Origin header is not hidden exactly once')
+          PY
+
+      - name: Validate Nginx syntax
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nginx
+          mkdir -p /tmp/newdomofon-nginx/logs
+          cat >/tmp/newdomofon-nginx/nginx.conf <<EOF
+          pid logs/nginx.pid;
+          error_log logs/error.log;
+          events {}
+          http {
+            include $GITHUB_WORKSPACE/deploy/nginx/newdomofon-video.conf;
+          }
+          EOF
+          sudo nginx -t -p /tmp/newdomofon-nginx/ -c nginx.conf
