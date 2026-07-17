@@ -37,7 +37,9 @@ EOF
 }
 
 cleanup() {
-  [[ -n "$WORK_DIR" ]] && rm -rf "$WORK_DIR"
+  if [[ -n "$WORK_DIR" ]]; then
+    rm -rf "$WORK_DIR"
+  fi
 }
 trap cleanup EXIT
 
