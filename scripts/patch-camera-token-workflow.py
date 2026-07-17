@@ -29,7 +29,8 @@ def patch_admin_view(path: Path) -> None:
     text = remove_once(text, '      <v-tab value="links">Ссылки</v-tab>\n', "admin links tab")
     text = remove_once(
         text,
-        '''\n      <v-window-item value="links">
+        '''
+      <v-window-item value="links">
         <AdminLinksPanel />
       </v-window-item>''',
         "admin links window",
@@ -157,7 +158,7 @@ def patch_devices_view(path: Path) -> None:
     missing = [marker for marker in required if marker not in text]
     if missing:
         raise RuntimeError(f"camera creation token markers missing: {missing}")
-    if "cameraForm.managed_token_id" in text:
+    if 'v-model="cameraForm.managed_token_id"' in text or "managed_token_id: null" in text:
         raise RuntimeError("obsolete single camera token field is still present")
 
     path.write_text(text, encoding="utf-8")
