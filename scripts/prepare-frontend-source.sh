@@ -13,15 +13,18 @@ require_file() {
 
 MANUAL_AUTO_PATCH="$PROJECT_DIR/scripts/patch-manual-auto-managed-tokens.py"
 SYSTEM_TOKEN_UI_PATCH="$PROJECT_DIR/scripts/patch-system-managed-token-ui.py"
+AUTO_ASSIGN_ALL_UI_PATCH="$PROJECT_DIR/scripts/patch-auto-assign-all-cameras-ui.py"
 CAMERA_DEVICE_UI_PATCH="$PROJECT_DIR/scripts/patch-camera-device-ui.py"
 
 require_file "$MANUAL_AUTO_PATCH"
 require_file "$SYSTEM_TOKEN_UI_PATCH"
+require_file "$AUTO_ASSIGN_ALL_UI_PATCH"
 require_file "$CAMERA_DEVICE_UI_PATCH"
 
 python3 -m py_compile \
   "$MANUAL_AUTO_PATCH" \
   "$SYSTEM_TOKEN_UI_PATCH" \
+  "$AUTO_ASSIGN_ALL_UI_PATCH" \
   "$CAMERA_DEVICE_UI_PATCH"
 
 # The historical managed-token implementation is still materialized by
@@ -29,6 +32,7 @@ python3 -m py_compile \
 # a frontend-only build from a clean checkout cannot silently drop features.
 python3 "$MANUAL_AUTO_PATCH" --project-dir "$PROJECT_DIR"
 python3 "$SYSTEM_TOKEN_UI_PATCH" --project-dir "$PROJECT_DIR"
+python3 "$AUTO_ASSIGN_ALL_UI_PATCH" --project-dir "$PROJECT_DIR"
 python3 "$CAMERA_DEVICE_UI_PATCH" --project-dir "$PROJECT_DIR"
 
 ADMIN_VIEW="$PROJECT_DIR/frontend/src/views/AdminView.vue"
@@ -39,7 +43,10 @@ ADMIN_LINKS="$PROJECT_DIR/frontend/src/components/AdminLinksPanel.vue"
 for marker in \
   'managedTokenForm.auto_assign_new_cameras' \
   'toggleManagedTokenAutoAssign' \
-  'token.auto_assign_new_cameras'; do
+  'token.auto_assign_new_cameras' \
+  'Автоматически назначать всем камерам' \
+  'Авто всем камерам' \
+  'существующие назначения сохранены'; do
   grep -q "$marker" "$ADMIN_VIEW" || {
     echo "Managed-token UI marker is missing after preparation: $marker" >&2
     exit 1

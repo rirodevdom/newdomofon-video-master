@@ -7,6 +7,7 @@ on:
       - 'scripts/prepare-frontend-source.sh'
       - 'scripts/patch-manual-auto-managed-tokens.py'
       - 'scripts/patch-system-managed-token-ui.py'
+      - 'scripts/patch-auto-assign-all-cameras-ui.py'
       - 'scripts/patch-camera-device-ui.py'
       - '.github/workflows/frontend-runtime-ui.yml'
   workflow_dispatch:
@@ -28,6 +29,7 @@ jobs:
           python3 -m py_compile \
             scripts/patch-manual-auto-managed-tokens.py \
             scripts/patch-system-managed-token-ui.py \
+            scripts/patch-auto-assign-all-cameras-ui.py \
             scripts/patch-camera-device-ui.py
 
       - name: Build frontend from clean checkout
@@ -41,6 +43,9 @@ jobs:
           grep -q 'managedTokenForm.auto_assign_new_cameras' frontend/src/views/AdminView.vue
           grep -q 'toggleManagedTokenAutoAssign' frontend/src/views/AdminView.vue
           grep -q 'token.auto_assign_new_cameras' frontend/src/views/AdminView.vue
+          grep -q 'Автоматически назначать всем камерам' frontend/src/views/AdminView.vue
+          grep -q 'Авто всем камерам' frontend/src/views/AdminView.vue
+          grep -q 'существующие назначения сохранены' frontend/src/views/AdminView.vue
           grep -q 'SYSTEM_MANAGED_TOKEN_ID' frontend/src/components/AdminLinksPanel.vue
           grep -q 'Запись ведётся' frontend/src/views/PlayerView.vue
           grep -q '<th>Комментарий</th>' frontend/src/views/DevicesView.vue

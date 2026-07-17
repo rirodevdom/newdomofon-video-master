@@ -1,0 +1,251 @@
+name: Managed token all-camera backfill
+
+on:
+  pull_request:
+    paths:
+      - 'backend/migrations/094_manual_auto_managed_camera_tokens.sql'
+      - 'backend/migrations/095_backfill_auto_managed_tokens_to_all_cameras.sql'
+      - '.github/workflows/managed-token-all-camera-backfill.yml'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: newdomofon
+          POSTGRES_PASSWORD: ci_database_password
+          POSTGRES_DB: newdomofon_video
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U newdomofon -d newdomofon_video"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      NODE_ENV: production
+      BACKEND_PORT: 3000
+      DATABASE_URL: postgres://newdomofon:ci_database_password@127.0.0.1:5432/newdomofon_video
+      JWT_SECRET: ci_jwt_secret_value_with_more_than_thirty_two_characters
+      MANAGED_CAMERA_TOKEN_SECRET: ci_managed_camera_token_secret_with_more_than_thirty_two_chars
+      ADMIN_LOGIN: admin
+      ADMIN_PASSWORD: ci_admin_password_2026
+      CORS_ORIGIN: http://127.0.0.1
+      TRUST_PROXY: 'true'
+      APP_PUBLIC_URL: http://127.0.0.1
+      SMARTYARD_PUBLIC_BASE_URL: http://127.0.0.1
+      INTERNAL_DVR_SECRET: ci_internal_dvr_secret_with_more_than_thirty_two_chars
+      NODE_REGISTRATION_TOKEN: ''
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci --include=dev --silent >/tmp/managed-token-npm-ci.log 2>&1 || { cat /tmp/managed-token-npm-ci.log; exit 1; }
+
+      - name: Apply migrations twice
+        working-directory: backend
+        run: |
+          {
+            npm run migrate
+            npm run migrate
+            npm run seed
+          } >/tmp/managed-token-migrate.log 2>&1 || {
+            cat /tmp/managed-token-migrate.log
+            exit 1
+          }
+          tail -20 /tmp/managed-token-migrate.log
+
+      - name: Verify all-camera automatic assignment
+        working-directory: backend
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import pg from 'pg';
+
+          const SYSTEM_TOKEN_ID = '00000000-0000-4000-8000-000000000001';
+          const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+
+          function assert(condition, message) {
+            if (!condition) throw new Error(message);
+          }
+
+          async function createCamera(index, deviceId) {
+            const result = await pool.query(
+              `INSERT INTO cameras(
+                 name, stream_name, source_url, device_id, retention_days, is_enabled
+               ) VALUES ($1, $2, $3, $4, 7, true)
+               RETURNING id`,
+              [
+                `CI camera ${index}`,
+                `ci_auto_camera_${index}`,
+                `rtsp://127.0.0.1/ci/${index}`,
+                deviceId
+              ]
+            );
+            return result.rows[0].id;
+          }
+
+          async function createToken(name, autoAssign, active = true) {
+            const result = await pool.query(
+              `INSERT INTO managed_camera_tokens(
+                 name, description, token_mode, generation, scopes,
+                 is_active, expires_at, auto_assign_new_cameras, created_by
+               ) VALUES ($1, $2, 'generated', 1, ARRAY['camera','events']::text[], $3, NULL, $4, NULL)
+               RETURNING id`,
+              [name, `CI token ${name}`, active, autoAssign]
+            );
+            return result.rows[0].id;
+          }
+
+          async function assignmentCount(tokenId, cameraIds) {
+            const result = await pool.query(
+              `SELECT count(*)::int AS count
+                 FROM managed_camera_token_cameras
+                WHERE token_id = $1
+                  AND camera_id = ANY($2::uuid[])`,
+              [tokenId, cameraIds]
+            );
+            return Number(result.rows[0].count);
+          }
+
+          async function totalAssignmentCount(tokenId) {
+            const result = await pool.query(
+              `SELECT count(*)::int AS count
+                 FROM managed_camera_token_cameras
+                WHERE token_id = $1`,
+              [tokenId]
+            );
+            return Number(result.rows[0].count);
+          }
+
+          try {
+            const deviceResult = await pool.query(
+              `INSERT INTO devices(
+                 name, connection_type, archive_storage, rtsp_url,
+                 status, is_enabled
+               ) VALUES ($1, 'RTSP', 'node', $2, 'online', true)
+               RETURNING id`,
+              ['CI automatic-token device', 'rtsp://127.0.0.1/ci']
+            );
+            const deviceId = deviceResult.rows[0].id;
+
+            const cameras = [
+              await createCamera(1, deviceId),
+              await createCamera(2, deviceId)
+            ];
+            assert(await assignmentCount(SYSTEM_TOKEN_ID, cameras) === 2,
+              'Existing cameras did not receive the system fallback');
+
+            const createdAutomatic = await createToken('CI created automatic', true);
+            assert(await assignmentCount(createdAutomatic, cameras) === 2,
+              'Token created with auto assignment was not attached to all existing cameras');
+            assert(await assignmentCount(SYSTEM_TOKEN_ID, cameras) === 0,
+              'System fallback remained after automatic user token assignment');
+
+            const toggledAutomatic = await createToken('CI toggled automatic', false);
+            assert(await assignmentCount(toggledAutomatic, cameras) === 0,
+              'Non-automatic token was unexpectedly attached');
+
+            await pool.query(
+              `UPDATE managed_camera_tokens
+                  SET auto_assign_new_cameras = true
+                WHERE id = $1`,
+              [toggledAutomatic]
+            );
+            assert(await assignmentCount(toggledAutomatic, cameras) === 2,
+              'Token switched to auto assignment was not attached to existing cameras');
+
+            const camera3 = await createCamera(3, deviceId);
+            cameras.push(camera3);
+            assert(await assignmentCount(createdAutomatic, [camera3]) === 1,
+              'Created automatic token was not attached to a new camera');
+            assert(await assignmentCount(toggledAutomatic, [camera3]) === 1,
+              'Toggled automatic token was not attached to a new camera');
+            assert(await assignmentCount(SYSTEM_TOKEN_ID, [camera3]) === 0,
+              'New camera incorrectly retained the system fallback');
+
+            await pool.query(
+              `UPDATE managed_camera_tokens
+                  SET auto_assign_new_cameras = false
+                WHERE id = $1`,
+              [toggledAutomatic]
+            );
+            assert(await totalAssignmentCount(toggledAutomatic) === 3,
+              'Disabling auto assignment removed existing assignments');
+
+            const camera4 = await createCamera(4, deviceId);
+            cameras.push(camera4);
+            assert(await assignmentCount(createdAutomatic, [camera4]) === 1,
+              'Still-automatic token was not attached to the fourth camera');
+            assert(await assignmentCount(toggledAutomatic, [camera4]) === 0,
+              'Disabled automatic token was attached to a later camera');
+
+            await pool.query(
+              `UPDATE managed_camera_tokens
+                  SET auto_assign_new_cameras = true
+                WHERE id = $1`,
+              [toggledAutomatic]
+            );
+            assert(await totalAssignmentCount(toggledAutomatic) === 4,
+              'Re-enabling auto assignment did not backfill the missing camera');
+
+            await pool.query(
+              `UPDATE managed_camera_tokens
+                  SET auto_assign_new_cameras = true
+                WHERE id = $1`,
+              [toggledAutomatic]
+            );
+            assert(await totalAssignmentCount(toggledAutomatic) === 4,
+              'Repeated auto-assignment update created duplicate assignments');
+
+            const inactiveAutomatic = await createToken('CI inactive automatic', true, false);
+            assert(await totalAssignmentCount(inactiveAutomatic) === 0,
+              'Inactive automatic token was attached before activation');
+            await pool.query(
+              `UPDATE managed_camera_tokens SET is_active = true WHERE id = $1`,
+              [inactiveAutomatic]
+            );
+            assert(await totalAssignmentCount(inactiveAutomatic) === 4,
+              'Activating an automatic token did not backfill all cameras');
+
+            await pool.query(
+              'ALTER TABLE managed_camera_tokens DISABLE TRIGGER trg_managed_camera_tokens_backfill_auto_assign'
+            );
+            const migrationCatchupToken = await createToken('CI migration catch-up', true);
+            assert(await totalAssignmentCount(migrationCatchupToken) === 0,
+              'Disabled trigger unexpectedly created assignments');
+            await pool.query(
+              'ALTER TABLE managed_camera_tokens ENABLE TRIGGER trg_managed_camera_tokens_backfill_auto_assign'
+            );
+
+            const migration = fs.readFileSync(
+              'migrations/095_backfill_auto_managed_tokens_to_all_cameras.sql',
+              'utf8'
+            );
+            await pool.query(migration);
+            await pool.query(migration);
+            assert(await totalAssignmentCount(migrationCatchupToken) === 4,
+              'Migration catch-up did not attach an existing automatic token to all cameras');
+
+            console.log({
+              cameras: cameras.length,
+              created_automatic_assignments: await totalAssignmentCount(createdAutomatic),
+              toggled_automatic_assignments: await totalAssignmentCount(toggledAutomatic),
+              inactive_then_activated_assignments: await totalAssignmentCount(inactiveAutomatic),
+              migration_catchup_assignments: await totalAssignmentCount(migrationCatchupToken)
+            });
+          } finally {
+            await pool.end();
+          }
+          NODE
