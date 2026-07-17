@@ -47,6 +47,17 @@ jobs:
           }
           cat /tmp/frontend-build.log
 
+      - name: Upload frontend build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build-log
+          path: |
+            /tmp/frontend-npm-ci.log
+            /tmp/frontend-build.log
+          if-no-files-found: ignore
+          retention-days: 1
+
       - name: Verify latest UI features coexist
         run: |
           grep -q 'managedTokenForm.auto_assign_new_cameras' frontend/src/views/AdminView.vue
