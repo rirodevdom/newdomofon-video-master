@@ -9,6 +9,7 @@ on:
       - 'scripts/patch-system-managed-token-ui.py'
       - 'scripts/patch-auto-assign-all-cameras-ui.py'
       - 'scripts/patch-camera-device-ui.py'
+      - 'scripts/patch-camera-token-workflow.py'
       - '.github/workflows/frontend-runtime-ui.yml'
   workflow_dispatch:
 
@@ -30,7 +31,8 @@ jobs:
             scripts/patch-manual-auto-managed-tokens.py \
             scripts/patch-system-managed-token-ui.py \
             scripts/patch-auto-assign-all-cameras-ui.py \
-            scripts/patch-camera-device-ui.py
+            scripts/patch-camera-device-ui.py \
+            scripts/patch-camera-token-workflow.py
 
       - name: Build frontend from clean checkout
         working-directory: frontend
@@ -46,6 +48,13 @@ jobs:
           grep -q 'Автоматически назначать всем камерам' frontend/src/views/AdminView.vue
           grep -q 'Авто всем камерам' frontend/src/views/AdminView.vue
           grep -q 'существующие назначения сохранены' frontend/src/views/AdminView.vue
+          ! grep -q 'value="links"' frontend/src/views/AdminView.vue
+          ! grep -q 'AdminLinksPanel' frontend/src/views/AdminView.vue
+          grep -q 'openTokenDialog(camera)' frontend/src/views/CamerasView.vue
+          grep -q 'saveTokenAssignments' frontend/src/views/CamerasView.vue
+          grep -q 'cameraForm.managed_token_ids' frontend/src/views/DevicesView.vue
+          grep -q 'CameraTokenLinksPanel' frontend/src/views/PlayerView.vue
+          grep -q 'Ссылки доступа по токенам' frontend/src/components/CameraTokenLinksPanel.vue
           grep -q 'SYSTEM_MANAGED_TOKEN_ID' frontend/src/components/AdminLinksPanel.vue
           grep -q 'Запись ведётся' frontend/src/views/PlayerView.vue
           grep -q '<th>Комментарий</th>' frontend/src/views/DevicesView.vue
