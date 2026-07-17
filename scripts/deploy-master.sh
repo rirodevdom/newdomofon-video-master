@@ -72,6 +72,7 @@ ensure_runtime_secrets() {
 apply_managed_token_runtime_patches() {
   local patcher="$PROJECT_DIR/scripts/patch-manual-auto-managed-tokens.py"
   local collision_fix="$PROJECT_DIR/scripts/fix-manual-token-resolver-variable.py"
+  local detach_guard="$PROJECT_DIR/scripts/patch-auto-token-detach-guard.py"
 
   [[ -f "$patcher" ]] || {
     echo "Managed-token patcher is missing: $patcher" >&2
@@ -81,15 +82,20 @@ apply_managed_token_runtime_patches() {
     echo "Managed-token resolver collision fix is missing: $collision_fix" >&2
     return 1
   }
+  [[ -f "$detach_guard" ]] || {
+    echo "Automatic token detach guard is missing: $detach_guard" >&2
+    return 1
+  }
 
   command -v python3 >/dev/null || {
     echo "python3 is required for managed-token runtime integration" >&2
     return 1
   }
 
-  python3 -m py_compile "$patcher" "$collision_fix"
+  python3 -m py_compile "$patcher" "$collision_fix" "$detach_guard"
   python3 "$collision_fix" --project-dir "$PROJECT_DIR"
   python3 "$patcher" --project-dir "$PROJECT_DIR"
+  python3 "$detach_guard" --project-dir "$PROJECT_DIR"
   python3 "$collision_fix" --project-dir "$PROJECT_DIR"
 
   grep -q "manualManagedCameraTokenDigest(body.token)" \
@@ -97,6 +103,8 @@ apply_managed_token_runtime_patches() {
   grep -q "rawManagedPlayerToken(access)" \
     "$PROJECT_DIR/backend/src/routes/managedAdminPlayer.ts"
   grep -q "auto_assign_new_cameras" \
+    "$PROJECT_DIR/backend/src/routes/managedCameraTokens.ts"
+  grep -q "Отключите автоматическое назначение токена всем камерам" \
     "$PROJECT_DIR/backend/src/routes/managedCameraTokens.ts"
 }
 
