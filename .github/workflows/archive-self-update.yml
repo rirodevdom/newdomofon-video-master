@@ -3,8 +3,11 @@ name: Archive self-update script
 on:
   pull_request:
     paths:
+      - 'README.md'
       - 'update-installed-project.sh'
       - 'scripts/install-master-from-archive.sh'
+      - 'scripts/install-master-local-root.sh'
+      - 'docs/BAREMETAL_DEBIAN12.md'
       - 'docs/UPDATE_FROM_ARCHIVE.md'
       - '.github/workflows/archive-self-update.yml'
   workflow_dispatch:
@@ -19,26 +22,32 @@ jobs:
         run: |
           bash -n update-installed-project.sh
           bash -n scripts/install-master-from-archive.sh
+          bash -n scripts/install-master-local-root.sh
           bash update-installed-project.sh --help >/tmp/archive-updater-help.txt
           bash scripts/install-master-from-archive.sh --help >/tmp/archive-installer-help.txt
+          bash scripts/install-master-local-root.sh --help >/tmp/local-root-installer-help.txt
           grep -q 'NewDomofon Video Master' /tmp/archive-updater-help.txt
           grep -q -- '--dry-run' /tmp/archive-updater-help.txt
           grep -q 'без Git' /tmp/archive-installer-help.txt
+          grep -q 'No git commands are used' /tmp/local-root-installer-help.txt
 
-      - name: Reject Git commands in server archive operations
+      - name: Reject Git commands in official server operations
         run: |
           python3 - <<'PY'
           from pathlib import Path
           import re
 
           files = [
+              Path('README.md'),
               Path('update-installed-project.sh'),
               Path('scripts/install-master-from-archive.sh'),
+              Path('scripts/install-master-local-root.sh'),
+              Path('docs/BAREMETAL_DEBIAN12.md'),
               Path('docs/UPDATE_FROM_ARCHIVE.md'),
           ]
           forbidden = [
               re.compile(r'(^|[;&|])\s*(sudo\s+)?git(\s|$)', re.IGNORECASE),
-              re.compile(r'\bgit\s+(clone|fetch|pull|switch|checkout|reset|init|status|diff|rev-parse|remote|add|commit)\b', re.IGNORECASE),
+              re.compile(r'\bgit\s+(clone|fetch|pull|switch|checkout|reset|init|status|diff|rev-parse|remote|add|commit|stash)\b', re.IGNORECASE),
               re.compile(r'\b(command\s+-v|which)\s+git\b', re.IGNORECASE),
               re.compile(r'\bapt(?:-get)?\s+install[^\n]*\bgit\b', re.IGNORECASE),
           ]
