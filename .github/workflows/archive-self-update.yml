@@ -4,6 +4,10 @@ on:
   pull_request:
     paths:
       - 'README.md'
+      - 'INSTALL_MASTER.md'
+      - 'INSTALL_MASTER_LOCAL_ROOT.md'
+      - 'INSTALL_MASTER_FROM_ARCHIVE.md'
+      - 'INSTALL_MASTER_FROM_DIRECTORY.md'
       - 'update-installed-project.sh'
       - 'scripts/install-master-from-archive.sh'
       - 'scripts/install-master-local-root.sh'
@@ -39,6 +43,10 @@ jobs:
 
           files = [
               Path('README.md'),
+              Path('INSTALL_MASTER.md'),
+              Path('INSTALL_MASTER_LOCAL_ROOT.md'),
+              Path('INSTALL_MASTER_FROM_ARCHIVE.md'),
+              Path('INSTALL_MASTER_FROM_DIRECTORY.md'),
               Path('update-installed-project.sh'),
               Path('scripts/install-master-from-archive.sh'),
               Path('scripts/install-master-local-root.sh'),
