@@ -37,8 +37,15 @@ jobs:
       - name: Build frontend from clean checkout
         working-directory: frontend
         run: |
-          npm ci --include=dev
-          npm run build
+          npm ci --include=dev >/tmp/frontend-npm-ci.log 2>&1 || {
+            cat /tmp/frontend-npm-ci.log
+            exit 1
+          }
+          npm run build >/tmp/frontend-build.log 2>&1 || {
+            cat /tmp/frontend-build.log
+            exit 1
+          }
+          cat /tmp/frontend-build.log
 
       - name: Verify latest UI features coexist
         run: |
