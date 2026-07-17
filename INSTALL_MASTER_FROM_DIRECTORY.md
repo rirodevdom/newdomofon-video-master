@@ -1,8 +1,8 @@
 # Установка Video Master из распакованной папки
 
-Этот способ используется, когда source master уже распакован внутри `/root` и Git не нужен.
+Этот способ используется, когда master ZIP/TAR уже передан на сервер и распакован внутри `/root`. Git и доступ к репозиторию не используются.
 
-Для актуальной схемы запускайте:
+Запускайте:
 
 ```text
 scripts/install-master-manual-local-root.sh
@@ -29,7 +29,7 @@ test -f "$SOURCE_DIR/scripts/install-master-manual-local-root.sh"
 test -f "$SOURCE_DIR/scripts/install-master-local-root.sh"
 ```
 
-Source directory должен находиться внутри `/root`.
+Source directory должен находиться вне `/opt/newdomofon-video-master`.
 
 ## 2. Интерактивный запуск
 
@@ -46,7 +46,8 @@ cd "$SOURCE_DIR"
 bash scripts/install-master-manual-local-root.sh \
   --domain video.example.ru \
   --email admin@example.ru \
-  --admin-login admin
+  --admin-login admin \
+  --tls
 ```
 
 ## 4. IP без TLS
@@ -60,24 +61,22 @@ bash scripts/install-master-manual-local-root.sh \
   --admin-login admin
 ```
 
-Wrapper сам передаёт корректный `--source-dir` внутреннему installer. Не добавляйте второй `--source-dir` вручную.
+Wrapper сам передаёт корректный `--source-dir` внутреннему installer.
 
 ## 5. Что происходит с source
 
 Распакованная папка не удаляется. Installer:
 
 - копирует source в `/opt/newdomofon-video-master`;
-- исключает `.git`, `.github`, `node_modules` и старые `dist`;
+- исключает служебные metadata, `node_modules` и старые `dist`;
 - сохраняет предыдущую production copy;
 - сохраняет PostgreSQL/config backup;
 - устанавливает backend/frontend/gateways;
 - оставляет `NODE_REGISTRATION_TOKEN` пустым.
 
-## 6. Runtime user
+## 6. Runtime
 
-Этот специальный сценарий запускает application units от `root`. PostgreSQL остаётся `postgres`, Nginx worker — `www-data`.
-
-Обычная установка из Git с пользователем `newdomofon` предпочтительнее. Подробно: [ROOT_RUNTIME_MASTER.md](ROOT_RUNTIME_MASTER.md).
+Application units в этом сценарии работают от `root`. PostgreSQL остаётся `postgres`, Nginx worker — `www-data`.
 
 ## 7. Проверка результата
 
@@ -89,7 +88,7 @@ systemctl is-active postgresql
 systemctl is-active nginx
 
 curl -fsS http://127.0.0.1:3000/api/health | jq
-curl -fsS http://127.0.0.1:3082/health | jq
+curl -fsS http://127.0.0.1/api/health | jq
 nginx -t
 
 grep '^NODE_REGISTRATION_TOKEN=' /etc/newdomofon-video/app.env
@@ -108,13 +107,7 @@ NODE_REGISTRATION_TOKEN=
 /root/newdomofon-master-access.json
 ```
 
-Wrapper редактирует marker legacy token на:
-
-```text
-DISABLED_MANUAL_NODE_REGISTRATION
-```
-
-Файлы содержат другие реальные passwords/secrets и должны оставаться `0600`.
+Файлы содержат реальные passwords/secrets и должны оставаться `0600`.
 
 ## 9. Регистрация video node
 
@@ -132,18 +125,12 @@ Node разворачивается отдельно и создаёт:
 
 Master не генерирует ID/token/media secret.
 
-## 10. `.env`
-
-Полный справочник: [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md).
-
-## 11. Диагностика
+## 10. Обновление
 
 ```bash
-LOG="$(ls -t /root/newdomofon-master-local-root-*.log | head -1)"
-tail -300 "$LOG"
-
-systemctl --no-pager --full status newdomofon-video-backend.service
-journalctl -u newdomofon-video-backend.service -n 300 --no-pager
+cd /root/newdomofon-video-master-main
+bash update-installed-project.sh --dry-run
+sudo bash update-installed-project.sh
 ```
 
-Не используйте `--regenerate-secrets` при обычном повторном запуске работающего master.
+Полный справочник `.env`: [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md).
