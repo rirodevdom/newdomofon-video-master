@@ -51,14 +51,20 @@ jobs:
 
       - name: Install backend dependencies
         working-directory: backend
-        run: npm ci --include=dev
+        run: npm ci --include=dev --silent >/tmp/managed-token-npm-ci.log 2>&1 || { cat /tmp/managed-token-npm-ci.log; exit 1; }
 
       - name: Apply migrations twice
         working-directory: backend
         run: |
-          npm run migrate
-          npm run migrate
-          npm run seed
+          {
+            npm run migrate
+            npm run migrate
+            npm run seed
+          } >/tmp/managed-token-migrate.log 2>&1 || {
+            cat /tmp/managed-token-migrate.log
+            exit 1
+          }
+          tail -20 /tmp/managed-token-migrate.log
 
       - name: Verify all-camera automatic assignment
         working-directory: backend
@@ -74,12 +80,18 @@ jobs:
             if (!condition) throw new Error(message);
           }
 
-          async function createCamera(index) {
+          async function createCamera(index, deviceId) {
             const result = await pool.query(
-              `INSERT INTO cameras(name, stream_name, source_url, retention_days, is_enabled)
-               VALUES ($1, $2, $3, 7, true)
+              `INSERT INTO cameras(
+                 name, stream_name, source_url, device_id, retention_days, is_enabled
+               ) VALUES ($1, $2, $3, $4, 7, true)
                RETURNING id`,
-              [`CI camera ${index}`, `ci_auto_camera_${index}`, `rtsp://127.0.0.1/ci/${index}`]
+              [
+                `CI camera ${index}`,
+                `ci_auto_camera_${index}`,
+                `rtsp://127.0.0.1/ci/${index}`,
+                deviceId
+              ]
             );
             return result.rows[0].id;
           }
@@ -118,7 +130,20 @@ jobs:
           }
 
           try {
-            const cameras = [await createCamera(1), await createCamera(2)];
+            const deviceResult = await pool.query(
+              `INSERT INTO devices(
+                 name, connection_type, archive_storage, rtsp_url,
+                 status, is_enabled
+               ) VALUES ($1, 'RTSP', 'node', $2, 'online', true)
+               RETURNING id`,
+              ['CI automatic-token device', 'rtsp://127.0.0.1/ci']
+            );
+            const deviceId = deviceResult.rows[0].id;
+
+            const cameras = [
+              await createCamera(1, deviceId),
+              await createCamera(2, deviceId)
+            ];
             assert(await assignmentCount(SYSTEM_TOKEN_ID, cameras) === 2,
               'Existing cameras did not receive the system fallback');
 
@@ -141,7 +166,7 @@ jobs:
             assert(await assignmentCount(toggledAutomatic, cameras) === 2,
               'Token switched to auto assignment was not attached to existing cameras');
 
-            const camera3 = await createCamera(3);
+            const camera3 = await createCamera(3, deviceId);
             cameras.push(camera3);
             assert(await assignmentCount(createdAutomatic, [camera3]) === 1,
               'Created automatic token was not attached to a new camera');
@@ -159,7 +184,7 @@ jobs:
             assert(await totalAssignmentCount(toggledAutomatic) === 3,
               'Disabling auto assignment removed existing assignments');
 
-            const camera4 = await createCamera(4);
+            const camera4 = await createCamera(4, deviceId);
             cameras.push(camera4);
             assert(await assignmentCount(createdAutomatic, [camera4]) === 1,
               'Still-automatic token was not attached to the fourth camera');
