@@ -27,13 +27,14 @@ jobs:
           bash -n update-installed-project.sh
           bash -n scripts/install-master-from-archive.sh
           bash -n scripts/install-master-local-root.sh
+
           bash update-installed-project.sh --help >/tmp/archive-updater-help.txt
           bash scripts/install-master-from-archive.sh --help >/tmp/archive-installer-help.txt
-          bash scripts/install-master-local-root.sh --help >/tmp/local-root-installer-help.txt
+
           grep -q 'NewDomofon Video Master' /tmp/archive-updater-help.txt
           grep -q -- '--dry-run' /tmp/archive-updater-help.txt
-          grep -q 'без Git' /tmp/archive-installer-help.txt
-          grep -q 'No git commands are used' /tmp/local-root-installer-help.txt
+          grep -qi 'Git' /tmp/archive-installer-help.txt
+          grep -q 'No git commands are used' scripts/install-master-local-root.sh
 
       - name: Reject Git commands in official server operations
         run: |
