@@ -27,12 +27,15 @@ usage() {
   --archive PATH      Локальный ZIP/TAR архив.
   --source-dir PATH   Уже распакованный проект.
   --project-dir PATH  Каталог установки.
-                      По умолчанию: /opt/newdomofon-video-master
+                       По умолчанию: /opt/newdomofon-video-master
 
-Остальные параметры передаются в install-master-local-root.sh:
+Остальные параметры передаются в install-master-manual-local-root.sh:
   --domain DOMAIN --email EMAIL --admin-login LOGIN --no-tls
   --tls --regenerate-secrets --skip-rtsp --require-rtsp
   --mediamtx-archive PATH
+
+Перед сборкой wrapper применяет production runtime-патчи SmartYard и токенов,
+а после установки проверяет CORS реальных media-маршрутов.
 EOF
 }
 
@@ -48,7 +51,9 @@ is_project_root() {
   [[ -d "$root" ]] &&
   [[ -f "$root/backend/package.json" ]] &&
   [[ -f "$root/frontend/package.json" ]] &&
-  [[ -f "$root/scripts/install-master-local-root.sh" ]]
+  [[ -f "$root/scripts/install-master-local-root.sh" ]] &&
+  [[ -f "$root/scripts/install-master-manual-local-root.sh" ]] &&
+  [[ -f "$root/scripts/prepare-master-runtime-source.sh" ]]
 }
 
 find_source_root() {
@@ -62,7 +67,7 @@ find_source_root() {
 
   helper="$(
     find "$search_root" -maxdepth 7 -type f \
-      -path '*/scripts/install-master-local-root.sh' \
+      -path '*/scripts/install-master-manual-local-root.sh' \
       -print -quit 2>/dev/null
   )"
   [[ -n "$helper" ]] || return 1
@@ -159,7 +164,7 @@ elif is_project_root "$CURRENT_SOURCE_ROOT"; then
 else
   SOURCE_ROOT="$(
     find /root -mindepth 1 -maxdepth 7 -type f \
-      -path '*/scripts/install-master-local-root.sh' \
+      -path '*/scripts/install-master-manual-local-root.sh' \
       -printf '%T@ %p\n' 2>/dev/null |
     sort -nr |
     while read -r _ helper; do
@@ -190,9 +195,8 @@ PY
 echo "Источник: $SOURCE_ROOT"
 echo "Каталог установки: $PROJECT_DIR"
 echo "Git и доступ к репозиторию не используются."
+echo "Clean-install runtime integration: enabled"
 
-SOURCE_DIR="$SOURCE_ROOT" \
 PROJECT_DIR="$PROJECT_DIR" \
-  bash "$SOURCE_ROOT/scripts/install-master-local-root.sh" \
-    --source-dir "$SOURCE_ROOT" \
+  bash "$SOURCE_ROOT/scripts/install-master-manual-local-root.sh" \
     "${PASSTHROUGH_ARGS[@]}"

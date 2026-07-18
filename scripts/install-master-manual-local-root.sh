@@ -4,7 +4,9 @@ umask 077
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+TARGET_PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video-master}"
 LEGACY_INSTALLER="$SCRIPT_DIR/install-master-local-root.sh"
+RUNTIME_PREPARER="$SCRIPT_DIR/prepare-master-runtime-source.sh"
 PATCHED_INSTALLER="$SCRIPT_DIR/.install-master-local-root.manual.$$"
 
 cleanup() {
@@ -16,6 +18,10 @@ trap cleanup EXIT
   echo "ERROR: installer not found: $LEGACY_INSTALLER" >&2
   exit 66
 }
+[[ -f "$RUNTIME_PREPARER" ]] || {
+  echo "ERROR: runtime preparer not found: $RUNTIME_PREPARER" >&2
+  exit 66
+}
 
 if (($#)) && [[ "$1" == "-h" || "$1" == "--help" ]]; then
   cat <<'EOF'
@@ -25,11 +31,21 @@ This wrapper installs the strict master with operator-defined video-node
 credentials. Legacy self-registration is disabled and NODE_REGISTRATION_TOKEN
 is left empty. Video node UUID/token/media secret are later entered manually in
 Administration -> Nodes -> Create node.
+
+Before the build it applies the same managed-token and SmartYard runtime
+integration as deploy-master.sh. After installation it validates public media
+CORS for HLS, MPEG-TS, recording status and events.
 EOF
   echo
   bash "$LEGACY_INSTALLER" --help
   exit 0
 fi
+
+# Clean installation previously built the base repository sources directly,
+# while deploy-master.sh applied the actual production token/media integration.
+# Prepare the extracted archive before it is copied to /opt so both paths are
+# identical and SmartYard requests cannot fall back to stale legacy handlers.
+PROJECT_DIR="$SOURCE_ROOT" bash "$RUNTIME_PREPARER"
 
 python3 - "$LEGACY_INSTALLER" "$PATCHED_INSTALLER" <<'PY'
 from pathlib import Path
@@ -46,9 +62,10 @@ PY
 
 chmod 0700 "$PATCHED_INSTALLER"
 
-bash "$PATCHED_INSTALLER" \
-  --source-dir "$SOURCE_ROOT" \
-  "$@"
+PROJECT_DIR="$TARGET_PROJECT_DIR" \
+  bash "$PATCHED_INSTALLER" \
+    --source-dir "$SOURCE_ROOT" \
+    "$@"
 
 ENV_FILE="${ENV_FILE:-/etc/newdomofon-video/app.env}"
 if [[ -f "$ENV_FILE" ]]; then
@@ -106,9 +123,20 @@ if json_path.exists():
 PY
 
 systemctl restart newdomofon-video-backend.service
+systemctl restart newdomofon-smartyard-compat.service
 curl -fsS --max-time 5 http://127.0.0.1:3000/api/health >/dev/null
+curl -fsS --max-time 5 http://127.0.0.1:3082/health >/dev/null
+
+# The repository Nginx template already owns public CORS. The smoke test is
+# deliberately fatal: a clean install must never finish successfully while
+# SmartYard media responses have missing or duplicated headers.
+if [[ -f "$TARGET_PROJECT_DIR/scripts/verify-smartyard-public-cors.sh" ]]; then
+  ENV_FILE="$ENV_FILE" \
+    bash "$TARGET_PROJECT_DIR/scripts/verify-smartyard-public-cors.sh"
+fi
 
 echo
 echo "Strict master installation completed."
 echo "Legacy node self-registration: disabled"
+echo "SmartYard runtime integration: prepared and verified"
 echo "Create video nodes with exact operator-defined values from the node registration file."
