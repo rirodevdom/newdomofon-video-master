@@ -38,7 +38,8 @@ jobs:
             >/tmp/archive-help.txt
 
           grep -q 'production runtime-патчи SmartYard' /tmp/archive-help.txt
-          grep -q 'validates public media CORS' /tmp/manual-root-help.txt
+          grep -q 'After installation it validates public media' /tmp/manual-root-help.txt
+          grep -q 'CORS for HLS' /tmp/manual-root-help.txt
 
       - name: Apply clean-install runtime preparation
         run: |
