@@ -2,7 +2,8 @@
 set -Eeuo pipefail
 umask 077
 
-BASE_URL="${BASE_URL:-http://127.0.0.1}"
+ENV_FILE="${ENV_FILE:-/etc/newdomofon-video/app.env}"
+BASE_URL="${BASE_URL:-}"
 ORIGIN="${ORIGIN:-http://smartyard-vue.local}"
 
 fail() {
@@ -13,6 +14,38 @@ fail() {
 command -v curl >/dev/null 2>&1 || fail "curl is required"
 command -v python3 >/dev/null 2>&1 || fail "python3 is required"
 
+if [[ -z "$BASE_URL" && -r "$ENV_FILE" ]]; then
+  BASE_URL="$(sed -n 's/^APP_PUBLIC_URL=//p' "$ENV_FILE" | tail -1)"
+fi
+BASE_URL="${BASE_URL:-http://127.0.0.1}"
+
+read -r PROBE_SCHEME PROBE_HOST PROBE_PORT < <(
+  python3 - "$BASE_URL" <<'PY'
+from urllib.parse import urlparse
+import sys
+
+parsed = urlparse(sys.argv[1])
+if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+    raise SystemExit("invalid BASE_URL")
+port = parsed.port or (443 if parsed.scheme == "https" else 80)
+print(parsed.scheme, parsed.hostname, port)
+PY
+)
+
+CURL_BASE="${PROBE_SCHEME}://${PROBE_HOST}"
+if ! { [[ "$PROBE_SCHEME" == http && "$PROBE_PORT" == 80 ]] || [[ "$PROBE_SCHEME" == https && "$PROBE_PORT" == 443 ]]; }; then
+  CURL_BASE="${CURL_BASE}:${PROBE_PORT}"
+fi
+
+COMMON_CURL_ARGS=(
+  -sS
+  --max-time 10
+  --resolve "${PROBE_HOST}:${PROBE_PORT}:127.0.0.1"
+)
+if [[ "$PROBE_SCHEME" == https ]]; then
+  COMMON_CURL_ARGS+=(-k)
+fi
+
 check_response() {
   local method="$1"
   local path="$2"
@@ -20,8 +53,7 @@ check_response() {
   headers="$(mktemp)"
 
   local -a args=(
-    -sS
-    --max-time 10
+    "${COMMON_CURL_ARGS[@]}"
     -X "$method"
     -H "Origin: $ORIGIN"
     -D "$headers"
@@ -36,7 +68,7 @@ check_response() {
     )
   fi
 
-  curl "${args[@]}" "${BASE_URL%/}$path" || true
+  curl "${args[@]}" "${CURL_BASE%/}$path" || true
 
   python3 - "$headers" "$method" "$path" <<'PY'
 from pathlib import Path
@@ -87,3 +119,4 @@ for path in "${paths[@]}"; do
 done
 
 echo "SmartYard public CORS smoke test passed."
+echo "probe_base=$CURL_BASE"
