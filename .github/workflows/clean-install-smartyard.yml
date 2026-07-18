@@ -1,0 +1,124 @@
+name: Clean install SmartYard integration
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/install-master-manual-local-root.sh'
+      - 'scripts/install-master-from-archive.sh'
+      - 'scripts/prepare-master-runtime-source.sh'
+      - 'scripts/verify-smartyard-public-cors.sh'
+      - 'scripts/patch-managed-media-gateway.py'
+      - 'scripts/patch-manual-auto-managed-tokens.py'
+      - 'smartyard-compat-proxy/**'
+      - 'backend/src/routes/internalSmartYard.ts'
+      - 'backend/src/routes/managedCameraTokens.ts'
+      - 'deploy/nginx/newdomofon-video.conf'
+      - '.github/workflows/clean-install-smartyard.yml'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Validate shell interfaces
+        run: |
+          bash -n scripts/prepare-master-runtime-source.sh
+          bash -n scripts/verify-smartyard-public-cors.sh
+          bash -n scripts/install-master-manual-local-root.sh
+          bash -n scripts/install-master-from-archive.sh
+
+          bash scripts/install-master-manual-local-root.sh --help \
+            >/tmp/manual-root-help.txt
+          bash scripts/install-master-from-archive.sh --help \
+            >/tmp/archive-help.txt
+
+          grep -q 'production runtime-патчи SmartYard' /tmp/archive-help.txt
+          grep -q 'validates public media CORS' /tmp/manual-root-help.txt
+
+      - name: Apply clean-install runtime preparation
+        run: |
+          PROJECT_DIR="$PWD" bash scripts/prepare-master-runtime-source.sh \
+            >/tmp/clean-install-runtime.txt
+
+          grep -q 'repository_access_used=false' /tmp/clean-install-runtime.txt
+          grep -q "rest.startsWith('cameras/')" \
+            smartyard-compat-proxy/server-node-aware.js
+          grep -q "rest.startsWith('cameras/')" \
+            smartyard-compat-proxy/server-formats-gateway.js
+          grep -q 'managed-resolver-rejected' \
+            smartyard-compat-proxy/server-node-aware.js
+          grep -q 'manualManagedCameraTokenDigest(body.token)' \
+            backend/src/routes/internalSmartYard.ts
+          grep -q 'auto_assign_new_cameras' \
+            backend/src/routes/managedCameraTokens.ts
+
+      - name: Validate gateway syntax
+        run: |
+          for file in \
+            server-node-aware.js \
+            server-events-gateway.js \
+            server-preview-gateway.js \
+            server-formats-gateway.js; do
+            node --check "smartyard-compat-proxy/$file"
+          done
+
+      - name: Validate clean-install wiring
+        run: |
+          grep -q 'prepare-master-runtime-source.sh' \
+            scripts/install-master-manual-local-root.sh
+          grep -q 'verify-smartyard-public-cors.sh' \
+            scripts/install-master-manual-local-root.sh
+          grep -q 'install-master-manual-local-root.sh' \
+            scripts/install-master-from-archive.sh
+          ! grep -q 'bash .*install-master-local-root.sh' \
+            scripts/install-master-from-archive.sh
+
+      - name: Validate canonical Nginx media CORS
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          text = Path('deploy/nginx/newdomofon-video.conf').read_text(encoding='utf-8')
+          starts = list(re.finditer(r'(?m)^\s*location\s+[^\n{]+\{', text))
+
+          def block_end(opening):
+              depth = 0
+              for index in range(opening, len(text)):
+                  if text[index] == '{':
+                      depth += 1
+                  elif text[index] == '}':
+                      depth -= 1
+                      if depth == 0:
+                          return index + 1
+              raise RuntimeError('unterminated location')
+
+          media = None
+          for match in starts:
+              opening = text.find('{', match.start(), match.end())
+              block = text[match.start():block_end(opening)]
+              header = block.split('{', 1)[0]
+              if '127.0.0.1:3082' in block and 'm3u8' in header and 'events' not in header:
+                  media = block
+                  break
+
+          if media is None:
+              raise SystemExit('public media location missing')
+          for name in (
+              'Access-Control-Allow-Origin',
+              'Access-Control-Allow-Methods',
+              'Access-Control-Allow-Headers',
+              'Access-Control-Expose-Headers',
+              'Access-Control-Allow-Private-Network',
+          ):
+              marker = f'proxy_hide_header {name};'
+              if media.count(marker) != 1:
+                  raise SystemExit(f'{marker} count={media.count(marker)}')
+          if media.count('add_header Access-Control-Allow-Origin "*" always;') != 2:
+              raise SystemExit('canonical GET/OPTIONS ACAO markers missing')
+          PY
