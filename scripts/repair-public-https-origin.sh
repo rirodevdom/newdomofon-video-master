@@ -70,18 +70,16 @@ fi
 [[ -f "$ENV_FILE" ]] || fail "environment file not found: $ENV_FILE"
 [[ -f "$SITE_CONF" ]] || fail "Nginx site config not found: $SITE_CONF"
 
-WORK_ENV="$ENV_FILE"
-WORK_CONF="$SITE_CONF"
-TMP_DIR=""
+TMP_DIR="$(mktemp -d)"
+cleanup() {
+  rm -rf "$TMP_DIR"
+}
+trap cleanup EXIT
 
-if [[ "$DRY_RUN" == "true" ]]; then
-  TMP_DIR="$(mktemp -d)"
-  trap 'rm -rf "$TMP_DIR"' EXIT
-  WORK_ENV="$TMP_DIR/app.env"
-  WORK_CONF="$TMP_DIR/newdomofon-video.conf"
-  cp -a "$ENV_FILE" "$WORK_ENV"
-  cp -a "$SITE_CONF" "$WORK_CONF"
-fi
+WORK_ENV="$TMP_DIR/app.env"
+WORK_CONF="$TMP_DIR/newdomofon-video.conf"
+cp -a "$ENV_FILE" "$WORK_ENV"
+cp -aL "$SITE_CONF" "$WORK_CONF"
 
 python3 - "$WORK_ENV" "$WORK_CONF" "$DOMAIN" "$HSTS_MAX_AGE" <<'PY'
 from pathlib import Path
@@ -256,9 +254,8 @@ rollback() {
 }
 trap rollback ERR
 
-# Apply the already validated temporary result to the real files.
-cp -a "$WORK_ENV" "$ENV_FILE"
-cp -a "$WORK_CONF" "$SITE_CONF"
+install -o root -g root -m 0640 "$WORK_ENV" "$ENV_FILE"
+install -o root -g root -m 0644 "$WORK_CONF" "$SITE_CONF"
 ln -sfn "$SITE_CONF" "$ENABLED_CONF"
 
 nginx -t
@@ -290,7 +287,8 @@ if [[ -n "$PROBE_ADDRESS" ]]; then
 fi
 curl "${CURL_ARGS[@]}" "https://$DOMAIN/"
 
-grep -Eiq "^Strict-Transport-Security:[[:space:]]*max-age=$HSTS_MAX_AGE([[:space:]]*;.*)?$" "$HSTS_HEADERS" ||
+tr -d '\r' < "$HSTS_HEADERS" |
+  grep -Eiq "^Strict-Transport-Security:[[:space:]]*max-age=$HSTS_MAX_AGE([[:space:]]*;.*)?$" ||
   fail "HSTS header was not returned by https://$DOMAIN/"
 rm -f "$HSTS_HEADERS"
 
