@@ -1,0 +1,95 @@
+name: SmartYard public HTTPS origin
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/repair-public-https-origin.sh'
+      - '.github/workflows/smartyard-public-https-origin.yml'
+      - 'integrations/smartyard-vue/README.md'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate shell interface
+        run: |
+          bash -n scripts/repair-public-https-origin.sh
+          bash scripts/repair-public-https-origin.sh --help \
+            | grep -q 'APP_PUBLIC_URL and SMARTYARD_PUBLIC_BASE_URL'
+
+      - name: Prepare TLS fixture
+        run: |
+          cp deploy/nginx/newdomofon-video.conf /tmp/newdomofon-video.conf
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('/tmp/newdomofon-video.conf')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace(
+              '    listen 80;\n',
+              '    listen 80;\n    listen 443 ssl;\n',
+              1,
+          )
+          text = text.replace(
+              '    server_name _;\n',
+              '    server_name 10.106.1.30 new-video.domofon-37.ru _;\n',
+              1,
+          )
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          cat >/tmp/app.env <<'EOF'
+          NODE_ENV=production
+          APP_PUBLIC_URL=http://new-video.domofon-37.ru
+          SMARTYARD_PUBLIC_BASE_URL=http://new-video.domofon-37.ru
+          EOF
+
+      - name: Dry-run twice without touching source files
+        run: |
+          before_env="$(sha256sum /tmp/app.env | awk '{print $1}')"
+          before_conf="$(sha256sum /tmp/newdomofon-video.conf | awk '{print $1}')"
+
+          for run in 1 2; do
+            bash scripts/repair-public-https-origin.sh \
+              --env-file /tmp/app.env \
+              --site-conf /tmp/newdomofon-video.conf \
+              --domain new-video.domofon-37.ru \
+              --probe-address 10.106.1.30 \
+              --dry-run \
+              | tee "/tmp/dry-run-$run.log"
+
+            grep -q 'public_origin=https://new-video.domofon-37.ru' "/tmp/dry-run-$run.log"
+            grep -q 'DRY RUN passed' "/tmp/dry-run-$run.log"
+            grep -q 'SmartYard-Vue changed=false' "/tmp/dry-run-$run.log"
+          done
+
+          test "$before_env" = "$(sha256sum /tmp/app.env | awk '{print $1}')"
+          test "$before_conf" = "$(sha256sum /tmp/newdomofon-video.conf | awk '{print $1}')"
+
+      - name: Reject missing TLS listener without mutations
+        run: |
+          cp deploy/nginx/newdomofon-video.conf /tmp/no-tls.conf
+          sed -i 's/server_name _;/server_name new-video.domofon-37.ru _;/' /tmp/no-tls.conf
+          cp /tmp/app.env /tmp/no-tls.env
+
+          before_env="$(sha256sum /tmp/no-tls.env | awk '{print $1}')"
+          before_conf="$(sha256sum /tmp/no-tls.conf | awk '{print $1}')"
+
+          set +e
+          output="$(
+            bash scripts/repair-public-https-origin.sh \
+              --env-file /tmp/no-tls.env \
+              --site-conf /tmp/no-tls.conf \
+              --domain new-video.domofon-37.ru \
+              --dry-run 2>&1
+          )"
+          rc=$?
+          set -e
+
+          test "$rc" -ne 0
+          grep -q 'TLS listener for new-video.domofon-37.ru:443 was not found' <<<"$output"
+          test "$before_env" = "$(sha256sum /tmp/no-tls.env | awk '{print $1}')"
+          test "$before_conf" = "$(sha256sum /tmp/no-tls.conf | awk '{print $1}')"
