@@ -49,3 +49,36 @@ jobs:
           npm install --global yarn@1.22.22
           yarn install --frozen-lockfile
           yarn build
+
+      - name: Roll back a partial patch on incompatible local source
+        run: |
+          git -C smartyard reset --hard HEAD
+          rm -rf smartyard/.newdomofon-backups
+
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('smartyard/src/hooks/useRanges.ts')
+          text = path.read_text(encoding='utf-8')
+          marker = '    const getDmRanges = () => {'
+          if text.count(marker) != 1:
+              raise SystemExit('expected upstream getDmRanges anchor')
+          path.write_text(text.replace(marker, '    const getDmRangesLocallyChanged = () => {', 1), encoding='utf-8')
+          PY
+
+          files=(
+            smartyard/src/lib/player.ts
+            smartyard/src/components/VideoCard.vue
+            smartyard/src/components/VideoModal.vue
+            smartyard/src/hooks/useRanges.ts
+            smartyard/src/components/CustomControls.vue
+          )
+          sha256sum "${files[@]}" >/tmp/smartyard-before.sha256
+
+          if python3 newdomofon/scripts/patch-smartyard-vue-newdomofon-media.py --project-dir smartyard; then
+            echo 'ERROR: incompatible source unexpectedly patched' >&2
+            exit 1
+          fi
+
+          sha256sum "${files[@]}" >/tmp/smartyard-after.sha256
+          cmp /tmp/smartyard-before.sha256 /tmp/smartyard-after.sha256
+          test ! -d smartyard/.newdomofon-backups

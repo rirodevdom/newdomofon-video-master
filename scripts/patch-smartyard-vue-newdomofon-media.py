@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 from pathlib import Path
-import shutil
 
 
 MARKER = "NEWDOMOFON_MEDIA_COMPAT_V1"
@@ -33,7 +32,7 @@ def patch_player(path: Path) -> bool:
     generatePreview = (): void => {{
         const {{url, token}} = this.camera;
         const timestamp = Math.floor(Date.now() / 1000);
-        this.preview = `${{url.replace(/\\/+$/, "")}}/${{timestamp}}-preview.mp4?token=${{encodeURIComponent(token || "")}}`;
+        this.preview = `${{url.replace(/\/+$/, "")}}/${{timestamp}}-preview.mp4?token=${{encodeURIComponent(token || "")}}`;
         this.setPreview();
     }};
 '''
@@ -111,10 +110,10 @@ def patch_ranges(path: Path) -> bool:
 '''
     new_direct = f'''    // {MARKER}: managed camera links are self-contained and do not require
     // a SmartYard subscriber session for archive range discovery.
-    const managedCamera = /^m(?:1|ct1)\\./.test(String(camera.token || ""));
+    const managedCamera = /^m(?:1|ct1)\./.test(String(camera.token || ""));
 
     const getDirectRanges = () => {{
-        const baseUrl = camera.url.replace(/\\/+$/, "");
+        const baseUrl = camera.url.replace(/\/+$/, "");
         axios.get(`${{baseUrl}}/recording_status.json`, {{
             params: {{token: camera.token}},
         }})
@@ -193,7 +192,7 @@ def patch_controls(path: Path) -> bool:
 }
 '''
     new = f'''// {MARKER}: permanent NewDomofon camera links can export MP4 directly.
-const managedCamera = /^m(?:1|ct1)\\./.test(String(camera.token || ""));
+const managedCamera = /^m(?:1|ct1)\./.test(String(camera.token || ""));
 
 const addDownloadNotification = () => {{
   const uuid = crypto.randomUUID()
@@ -220,7 +219,7 @@ const downloadHandler = () => {{
 
   if (managedCamera) {{
     const duration = Math.max(1, toMoment.diff(fromMoment, "second"));
-    const baseUrl = camera.url.replace(/\\/+$/, "");
+    const baseUrl = camera.url.replace(/\/+$/, "");
     const href = `${{baseUrl}}/archive-${{fromMoment.unix()}}-${{duration}}.mp4?token=${{encodeURIComponent(camera.token)}}`;
     const link = document.createElement('a');
     link.href = href;
@@ -264,9 +263,17 @@ def main() -> int:
 
     originals = {relative: (root / relative).read_bytes() for relative in targets}
     changed: list[str] = []
-    for relative, patcher in targets.items():
-        if patcher(root / relative):
-            changed.append(relative)
+    try:
+        for relative, patcher in targets.items():
+            if patcher(root / relative):
+                changed.append(relative)
+    except Exception:
+        # A locally integrated SmartYard copy may differ from upstream. Restore
+        # the exact state present at invocation so a failed anchor never leaves
+        # a half-patched frontend tree.
+        for relative, content in originals.items():
+            (root / relative).write_bytes(content)
+        raise
 
     if changed:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
