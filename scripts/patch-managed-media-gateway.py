@@ -120,9 +120,12 @@ def main() -> int:
     if patch_node_resolver(node_aware) and str(node_aware.relative_to(project)) not in changed_files:
         changed_files.append(str(node_aware.relative_to(project)))
 
-    run_patch(project, "patch-smartyard-flussonic-compat.py")
+    # The archive-ranges patch uses the original archivePlaylist declaration as
+    # its insertion anchor. Apply it before replacing that declaration with the
+    # wider Flussonic/fMP4-compatible aliases. All patchers remain idempotent.
     run_patch(project, "patch-archive-playback-window.py")
     run_patch(project, "patch-archive-seek-navigation.py")
+    run_patch(project, "patch-smartyard-flussonic-compat.py")
 
     print("Managed media gateway patch applied")
     if changed_files:
