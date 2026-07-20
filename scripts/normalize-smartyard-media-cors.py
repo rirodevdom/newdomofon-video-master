@@ -12,8 +12,8 @@ ALLOW_ORIGIN_RE = re.compile(r"^(\s*)add_header\s+Access-Control-Allow-Origin\s+
 PRIVATE_NETWORK_RE = re.compile(r"^\s*add_header\s+Access-Control-Allow-Private-Network\s+[^;]+;\s*$")
 HIDE_CORS_RE = re.compile(
     r"^\s*proxy_hide_header\s+Access-Control-(?:"
-    r"Allow-(?:Origin|Methods|Headers|Credentials|Private-Network|Max-Age)"
-    r"|Expose-Headers);\s*$"
+    r"Allow-(?:Origin|Methods|Headers|Credentials|Private-Network)"
+    r"|Expose-Headers|Max-Age);\s*$"
 )
 PRIVATE_NETWORK_LINE = 'add_header Access-Control-Allow-Private-Network "true" always;'
 
@@ -121,6 +121,7 @@ def normalize_media_block(block: str) -> str:
         "proxy_hide_header Access-Control-Allow-Headers;": 1,
         "proxy_hide_header Access-Control-Expose-Headers;": 1,
         "proxy_hide_header Access-Control-Allow-Private-Network;": 1,
+        "proxy_hide_header Access-Control-Max-Age;": 1,
         PRIVATE_NETWORK_LINE: 2,
     }
     for marker, expected in required_counts.items():
