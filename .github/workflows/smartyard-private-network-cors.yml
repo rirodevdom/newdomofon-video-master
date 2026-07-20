@@ -1,0 +1,96 @@
+name: SmartYard private-network CORS
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/normalize-smartyard-media-cors.py'
+      - 'scripts/repair-public-media-cors.sh'
+      - 'scripts/verify-smartyard-public-cors.sh'
+      - 'deploy/nginx/newdomofon-video.conf'
+      - '.github/workflows/smartyard-private-network-cors.yml'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate interfaces
+        run: |
+          python3 -m py_compile scripts/normalize-smartyard-media-cors.py
+          bash -n scripts/repair-public-media-cors.sh
+          bash -n scripts/verify-smartyard-public-cors.sh
+
+      - name: Repair preserved legacy Nginx config twice
+        run: |
+          cp deploy/nginx/newdomofon-video.conf /tmp/legacy.conf
+          sed -i '/Access-Control-Allow-Private-Network/d' /tmp/legacy.conf
+          sed -i '/proxy_hide_header Access-Control-Allow-Private-Network/d' /tmp/legacy.conf
+
+          python3 scripts/normalize-smartyard-media-cors.py /tmp/legacy.conf
+          cp /tmp/legacy.conf /tmp/first.conf
+          python3 scripts/normalize-smartyard-media-cors.py /tmp/legacy.conf
+          cmp /tmp/first.conf /tmp/legacy.conf
+
+      - name: Verify OPTIONS and GET private-network headers
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          text = Path('/tmp/legacy.conf').read_text(encoding='utf-8')
+          starts = list(re.finditer(r'(?m)^\s*location\s+[^\n{]+\{', text))
+
+          def block_end(opening):
+              depth = 0
+              for index in range(opening, len(text)):
+                  if text[index] == '{':
+                      depth += 1
+                  elif text[index] == '}':
+                      depth -= 1
+                      if depth == 0:
+                          return index + 1
+              raise RuntimeError('unterminated location')
+
+          media = None
+          for match in starts:
+              opening = text.find('{', match.start(), match.end())
+              block = text[match.start():block_end(opening)]
+              header = block.split('{', 1)[0]
+              if '127.0.0.1:3082' in block and 'm3u8' in header and 'events' not in header:
+                  media = block
+                  break
+
+          if media is None:
+              raise SystemExit('public media location missing')
+
+          expected = {
+              'add_header Access-Control-Allow-Origin "*" always;': 2,
+              'add_header Access-Control-Allow-Private-Network "true" always;': 2,
+              'proxy_hide_header Access-Control-Allow-Origin;': 1,
+              'proxy_hide_header Access-Control-Allow-Private-Network;': 1,
+          }
+          for marker, count in expected.items():
+              actual = media.count(marker)
+              if actual != count:
+                  raise SystemExit(f'{marker} count={actual}, expected={count}')
+
+          options_match = re.search(r'if\s*\(\$request_method\s*=\s*OPTIONS\)\s*\{', media)
+          if not options_match:
+              raise SystemExit('OPTIONS branch missing')
+          opening = media.find('{', options_match.start(), options_match.end())
+          depth = 0
+          end = None
+          for index in range(opening, len(media)):
+              if media[index] == '{':
+                  depth += 1
+              elif media[index] == '}':
+                  depth -= 1
+                  if depth == 0:
+                      end = index + 1
+                      break
+          options = media[options_match.start():end]
+          if options.count('add_header Access-Control-Allow-Private-Network "true" always;') != 1:
+              raise SystemExit('OPTIONS private-network header missing or duplicated')
+          PY
