@@ -1,0 +1,57 @@
+name: SmartYard own-side-only boundary
+
+on:
+  pull_request:
+    paths:
+      - 'integrations/smartyard-vue/**'
+      - 'docs/SMARTYARD_OWN_SIDE_ONLY.md'
+      - 'smartyard-compat-proxy/**'
+      - 'scripts/patch-smartyard-flussonic-compat.py'
+      - 'scripts/prepare-master-runtime-source.sh'
+      - 'deploy/nginx/newdomofon-video.conf'
+      - '.github/workflows/smartyard-own-side-only.yml'
+      - 'scripts/install-smartyard-server-newdomofon-compat.sh'
+      - 'scripts/patch-smartyard-server-newdomofon-media.py'
+      - 'integrations/smartyard-server/**'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reject external SmartYard modifications
+        run: |
+          test ! -e scripts/install-smartyard-server-newdomofon-compat.sh
+          test ! -e scripts/patch-smartyard-server-newdomofon-media.py
+          test ! -e integrations/smartyard-server/newdomofon_media_compat.py
+          test ! -e integrations/smartyard-server/smartyard-camera-tokens.example.json
+          test ! -e scripts/patch-smartyard-vue-newdomofon-media.py
+
+          ! grep -Rqs 'install-smartyard-server-newdomofon-compat' \
+            scripts integrations --exclude='README.md'
+          ! grep -Rqs 'patch-smartyard-server-newdomofon-media' \
+            scripts integrations --exclude='README.md'
+
+      - name: Validate NewDomofon direct media contract
+        run: |
+          grep -q 'preview\.mp4' integrations/smartyard-vue/README.md
+          grep -q 'index\.m3u8' integrations/smartyard-vue/README.md
+          grep -q 'recording_status\.json' integrations/smartyard-vue/README.md
+          grep -q 'archive-<from>-<duration>\.mp4' integrations/smartyard-vue/README.md
+
+          grep -q 'newdomofon-smartyard-still-preview' \
+            scripts/patch-smartyard-flussonic-compat.py
+          grep -q 'const livePlaylist' \
+            scripts/patch-smartyard-flussonic-compat.py
+          grep -q 'recording_status' \
+            smartyard-compat-proxy/server-node-aware.js
+
+      - name: Validate documented hard boundary
+        run: |
+          grep -q '/mobile/cctv/ranges' integrations/smartyard-vue/README.md
+          grep -q 'невозможно исправить только NewDomofon-серверами' \
+            integrations/smartyard-vue/README.md
+          grep -q 'cannot be repaired solely from the NewDomofon servers' \
+            docs/SMARTYARD_OWN_SIDE_ONLY.md
