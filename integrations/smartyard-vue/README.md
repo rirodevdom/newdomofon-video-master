@@ -1,14 +1,20 @@
-# SmartYard-Vue и NewDomofon: совместимость без изменения frontend
+# SmartYard-Vue и NewDomofon: работа только с нашей стороны
 
-Оригинальный `rosteleset/SmartYard-Vue` и локальная сборка с интегрированным плеером должны работать без патчей, пересборки и изменения исходников frontend.
+Поддерживаемая интеграция не требует и не допускает изменений на сторонних серверах:
 
-## Поддерживаемый контракт
+- RBT/SmartYard-Server не изменяется;
+- оригинальный `rosteleset/SmartYard-Vue` не изменяется и не пересобирается;
+- на тестовой странице разрешена только замена штатного видеоплеера нашим плеером;
+- все media-функции реализуются NewDomofon master/node.
 
-NewDomofon master предоставляет стандартные Flussonic-совместимые URL:
+## Контракт NewDomofon media
+
+Master предоставляет Flussonic-совместимые URL:
 
 ```text
 /<stream>/preview.mp4?token=...
 /<stream>/<unix>-preview.mp4?token=...
+/<stream>/snapshot.jpg?token=...
 /<stream>/index.m3u8?token=...
 /<stream>/index.fmp4.m3u8?token=...
 /<stream>/index-<from>-<duration>.m3u8?token=...
@@ -17,13 +23,27 @@ NewDomofon master предоставляет стандартные Flussonic-с
 /<stream>/archive-<from>-<duration>.mp4?token=...
 ```
 
-`preview.mp4` формируется как неподвижный одно-кадровый MP4 без аудиодорожки. Это предотвращает воспроизведение короткого видео со звуком в штатном autoplay preview-элементе SmartYard-Vue.
+`preview.mp4` формируется как неподвижный одно-кадровый MP4 без аудиодорожки. Это позволяет неизменённому autoplay preview-элементу показывать миниатюру без движения и звука.
 
-Master добавляет единый набор CORS и Private Network Access заголовков для OPTIONS и GET/HEAD. Изменять Nginx или JavaScript SmartYard-Vue для live не требуется.
+Master добавляет canonical CORS и Private Network Access для `OPTIONS` и `GET/HEAD`. Node обслуживает live, snapshot, архивное воспроизведение и MP4-экспорт.
 
-## Почему нужен серверный адаптер RBT
+## Тестовая страница с нашим плеером
 
-Оригинальный SmartYard-Vue получает архивные диапазоны и готовит скачивание через API SmartYard-Server:
+Наш плеер должен работать напрямую с NewDomofon и не вызывать API RBT для media-функций:
+
+1. Миниатюра: `preview.mp4` или `snapshot.jpg`.
+2. Live: `index.m3u8` либо `index.fmp4.m3u8`.
+3. Диапазоны архива: `recording_status.json`.
+4. Воспроизведение архива: `index-<from>-<duration>.m3u8`.
+5. Скачивание: `archive-<from>-<duration>.mp4`.
+
+В тестовом SmartYard-Vue заменяется только реализация плеера. Остальные компоненты, store, API-клиент и структура страницы не патчатся.
+
+## Оригинальный SmartYard-Vue
+
+Preview и live оригинального интерфейса могут работать напрямую через URL камеры NewDomofon, потому что эти запросы направляются на media origin.
+
+Однако при наличии `camera.serverType` оригинальный frontend получает архив и готовит скачивание через API своего SmartYard-Server:
 
 ```text
 /mobile/cctv/ranges
@@ -31,72 +51,23 @@ Master добавляет единый набор CORS и Private Network Access
 /mobile/cctv/recDownload
 ```
 
-Поэтому compatibility layer устанавливается в AXIOSTV SmartYard-Server на RBT-сервере. Он:
+Эти запросы уходят на origin RBT, а не на NewDomofon. Наш master/node не могут перехватить, изменить, перенаправить или добавить CORS к ответу другого origin.
 
-- сохраняет штатную авторизацию пользователя;
-- добавляет CORS даже для ответов 4xx;
-- выдаёт managed token для камер NewDomofon в стандартных ответах camera API;
-- получает диапазоны через `recording_status.json`;
-- готовит MP4 через `archive-<from>-<duration>.mp4`;
-- не меняет поведение остальных Flussonic-камер;
-- не изменяет SmartYard-Vue.
+Следовательно, без изменений оригинального SmartYard-Vue и без изменений RBT:
 
-## Установка на RBT-сервере
+- preview и live исправляются с нашей стороны;
+- полный архив и скачивание обеспечиваются в нашей тестовой странице через заменённый плеер;
+- ошибку `/mobile/cctv/ranges` в оригинальном интерфейсе невозможно исправить только NewDomofon-серверами.
 
-Передайте на RBT-сервер распакованный архив `newdomofon-video-master` и выполните:
+Это жёсткая граница браузерного origin и контракта приложения, а не отсутствующий endpoint NewDomofon.
 
-```bash
-cd /root/newdomofon-video-master-main
+## Запрещённый сценарий
 
-bash scripts/install-smartyard-server-newdomofon-compat.sh \
-  --rbt-dir /opt/rbt/server \
-  --dry-run
+В репозитории не должно быть установщиков или patcher-скриптов, которые изменяют:
 
-sudo bash scripts/install-smartyard-server-newdomofon-compat.sh \
-  --rbt-dir /opt/rbt/server \
-  --service <RBT_SYSTEMD_UNIT>
-```
+- `/opt/rbt/server/smartyard.py`;
+- любой другой SmartYard-Server;
+- исходники оригинального SmartYard-Vue;
+- собранные assets стороннего SmartYard-Vue.
 
-Git и доступ к репозиторию на сервере не используются.
-
-Installer создаёт backup в:
-
-```text
-/var/backups/newdomofon-video/smartyard-server/<timestamp>/
-```
-
-и устанавливает рядом со `smartyard.py` модуль:
-
-```text
-newdomofon_media_compat.py
-```
-
-## Managed token
-
-Если текущий `Users.videotoken` уже содержит `m1.*` или `mct1.*`, дополнительная настройка не нужна.
-
-Иначе создайте root-only mapping:
-
-```text
-/etc/newdomofon-video/smartyard-camera-tokens.json
-```
-
-Пример находится в:
-
-```text
-integrations/smartyard-server/smartyard-camera-tokens.example.json
-```
-
-Поддерживается привязка по `camera_id`, имени stream или полному URL. Файл должен иметь права `0600` и не должен попадать в логи или архив исходников.
-
-## Проверка
-
-После перезапуска RBT:
-
-1. Оригинальный SmartYard-Vue должен получать HTTP 200 от `/mobile/cctv/ranges`.
-2. Live должен запрашиваться через `/<stream>/index.m3u8` или `index.fmp4.m3u8`.
-3. Preview должен оставаться неподвижным и без звука.
-4. После выбора архивного диапазона должна появляться штатная кнопка скачивания.
-5. `/mobile/cctv/recPrepare` должен вернуть record ID, а `/mobile/cctv/recDownload` — URL готового файла.
-
-Ни исходники, ни собранные assets SmartYard-Vue в этом сценарии не меняются.
+Подробная фиксация границы находится в `docs/SMARTYARD_OWN_SIDE_ONLY.md`.
