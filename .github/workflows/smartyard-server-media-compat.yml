@@ -30,6 +30,9 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install test dependency
+        run: python3 -m pip install requests
+
       - name: Validate interfaces and server-only policy
         run: |
           bash -n scripts/install-smartyard-server-newdomofon-compat.sh
@@ -43,7 +46,7 @@ jobs:
           test ! -e scripts/patch-smartyard-vue-newdomofon-media.py
           test ! -e .github/workflows/smartyard-vue-direct-media.yml
           ! grep -Rqs 'patch-smartyard-vue-newdomofon-media' \
-            integrations scripts README.md docs || false
+            integrations scripts README.md docs
 
       - name: Dry-run installer against upstream server
         run: |
