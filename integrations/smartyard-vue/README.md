@@ -134,7 +134,7 @@ SUMMARY_HTTP=200
 SMARTYARD CAMERA EVENTS VERIFIED
 ```
 
-## Патч SmartYard-Vue
+## Патч SmartYard-Vue для событий
 
 Скрипт:
 
@@ -167,9 +167,45 @@ SMARTYARD_VUE_BUILD=1 \
   bash /opt/newdomofon-video-master/scripts/patch-smartyard-vue-camera-events.sh
 ```
 
+## Патч live, превью, архива и скачивания
+
+Оригинальный SmartYard-Vue предполагает, что:
+
+- `preview.mp4` можно автоматически воспроизводить со звуком;
+- архивные диапазоны для любой камеры с `serverType` нужно получать через авторизованный `/mobile/cctv/ranges`;
+- экспорт всегда запускается через `/mobile/cctv/recPrepare` и `/mobile/cctv/recDownload`.
+
+Для permanent managed-token ссылок NewDomofon это лишняя зависимость от SmartYard subscriber session. Патчер:
+
+- делает preview-элементы беззвучными;
+- использует timestamp preview `<unix>-preview.mp4`, то есть один кадр вместо live-фрагмента;
+- кодирует token в HLS URL;
+- получает диапазоны напрямую из `/<stream>/recording_status.json` для `m1.*` и `mct1.*`;
+- скачивает выбранный MP4 напрямую через `/<stream>/archive-<from>-<duration>.mp4`;
+- сохраняет стандартные `/cctv/ranges`, `/cctv/recPrepare` и `/cctv/recDownload` для остальных DVR.
+
+Применение к оригинальной или локально изменённой копии:
+
+```bash
+python3 /opt/newdomofon-video-master/scripts/patch-smartyard-vue-newdomofon-media.py \
+  --project-dir /path/to/SmartYard-Vue
+
+cd /path/to/SmartYard-Vue
+yarn install --frozen-lockfile
+yarn build
+```
+
+Скрипт создаёт резервные копии изменённых файлов в:
+
+```text
+/path/to/SmartYard-Vue/.newdomofon-backups/media-compat-<timestamp>/
+```
+
+Повторный запуск идемпотентен. Если локальная интеграция уже существенно изменила один из целевых компонентов, patcher завершится до записи несовместимого фрагмента; в этом случае сравните локальный компонент с оригиналом и перенесите те же четыре правила вручную.
+
 ## Rollback SmartYard-Vue
 
-Путь backup выводится скриптом. Для отката:
+Путь backup выводится скриптом. Для отката event-патча:
 
 ```bash
 cp -a \
@@ -178,6 +214,8 @@ cp -a \
 
 rm -f /path/to/SmartYard-Vue/src/components/CameraMotionEvents.vue
 ```
+
+Для media-патча восстановите файлы с суффиксом `.before` из соответствующего каталога `media-compat-<timestamp>`.
 
 Затем пересоберите SmartYard-Vue.
 
