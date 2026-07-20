@@ -77,12 +77,12 @@
           <v-row>
             <v-col cols="12" md="6"><v-text-field v-model="form.name" label="Название node" /></v-col>
             <v-col cols="12" md="6"><v-switch v-model="form.is_enabled" color="primary" label="Активна" /></v-col>
-            <v-col cols="12"><v-text-field v-model="form.master_url" label="DVR_MASTER_URL" placeholder="https://new-video.domofon-37.ru" /></v-col>
+            <v-col cols="12"><v-text-field v-model="form.master_url" label="DVR_MASTER_URL" placeholder="https://video.example.com" /></v-col>
             <v-col cols="12"><v-text-field v-model="form.node_id" label="DVR_NODE_ID" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autocomplete="off" /></v-col>
             <v-col cols="12"><v-text-field v-model="form.agent_token" label="DVR_NODE_TOKEN" type="password" autocomplete="new-password" /></v-col>
             <v-col cols="12"><v-text-field v-model="form.media_secret" label="DVR_NODE_MEDIA_SECRET" type="password" autocomplete="new-password" /></v-col>
-            <v-col cols="12" md="6"><v-text-field v-model="form.public_base_url" label="DVR_NODE_PUBLIC_BASE_URL" placeholder="http://10.106.1.31" /></v-col>
-            <v-col cols="12" md="6"><v-text-field v-model="form.internal_url" label="DVR_NODE_INTERNAL_URL" placeholder="http://10.106.1.31:3010" /></v-col>
+            <v-col cols="12" md="6"><v-text-field v-model="form.public_base_url" label="DVR_NODE_PUBLIC_BASE_URL" placeholder="http://192.0.2.20" /></v-col>
+            <v-col cols="12" md="6"><v-text-field v-model="form.internal_url" label="DVR_NODE_INTERNAL_URL" placeholder="http://192.0.2.20:3010" /></v-col>
           </v-row>
         </v-card-text>
         <v-card-actions>
