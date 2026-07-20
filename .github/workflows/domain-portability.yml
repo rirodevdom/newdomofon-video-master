@@ -1,0 +1,64 @@
+name: Domain portability
+
+on:
+  pull_request:
+    paths:
+      - 'backend/**'
+      - 'frontend/src/**'
+      - 'deploy/**'
+      - 'smartyard-compat-proxy/**'
+      - 'integrations/smartyard-vue/**'
+      - 'scripts/lib/master-one-shot-install.sh'
+      - 'scripts/install-master-local-root.sh'
+      - 'scripts/repair-public-https-origin.sh'
+      - 'scripts/repair-public-media-cors.sh'
+      - 'scripts/verify-smartyard-public-cors.sh'
+      - 'scripts/fix-nginx-smartyard-events-route.sh'
+      - 'scripts/check-runtime-portability.sh'
+      - '.github/workflows/domain-portability.yml'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate portability guard
+        run: |
+          bash -n scripts/check-runtime-portability.sh
+          bash scripts/check-runtime-portability.sh
+
+      - name: Validate URL resolution from arbitrary environment
+        run: |
+          cp deploy/nginx/newdomofon-video.conf /tmp/portable.conf
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('/tmp/portable.conf')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace('    listen 80;\n', '    listen 80;\n    listen 443 ssl;\n', 1)
+          text = text.replace('    server_name _;\n', '    server_name _;\n', 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          cat >/tmp/portable.env <<'EOF'
+          NODE_ENV=production
+          APP_PUBLIC_URL=http://portable.example.test
+          SMARTYARD_PUBLIC_BASE_URL=http://portable.example.test
+          CORS_ORIGIN=http://portable.example.test
+          EOF
+
+          bash scripts/repair-public-https-origin.sh \
+            --env-file /tmp/portable.env \
+            --site-conf /tmp/portable.conf \
+            --dry-run \
+            | tee /tmp/portable.log
+
+          grep -q 'public_origin=https://portable.example.test' /tmp/portable.log
+          grep -q 'public_host=portable.example.test' /tmp/portable.log
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
