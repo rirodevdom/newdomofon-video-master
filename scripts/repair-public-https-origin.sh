@@ -19,22 +19,18 @@ Repair NewDomofon public HTTPS settings without a built-in deployment domain.
 
 The public URL is resolved in this order:
 1. --public-url / PUBLIC_URL
-2. --domain / DOMAIN (compatibility option; HTTPS is assumed)
+2. --domain / DOMAIN (compatibility option)
 3. SMARTYARD_PUBLIC_BASE_URL from the production environment
 4. APP_PUBLIC_URL from the production environment
 5. PUBLIC_BACKEND_BASE_URL from the production environment
 6. CORS_ORIGIN from the production environment
-
-The resolved hostname is used to select the TLS Nginx vhost. If no matching
-server_name exists and there is exactly one TLS vhost, that vhost is selected
-and the hostname is added to its server_name directive.
 
 Usage:
   sudo bash scripts/repair-public-https-origin.sh [options]
 
 Options:
   --public-url URL       Canonical public URL, for example https://video.example.com
-  --domain NAME          Compatibility shorthand for --public-url https://NAME
+  --domain NAME          Compatibility shorthand; a full URL is also accepted
   --probe-address IP     Local address where Nginx listens on the public port
   --test-origin URL      Browser origin used only for the CORS smoke test
   --env-file PATH        Master environment file
@@ -50,13 +46,6 @@ EOF
 fail() {
   echo "ERROR: $*" >&2
   exit 1
-}
-
-read_env_value() {
-  local key="$1"
-  local file="$2"
-  [[ -r "$file" ]] || return 0
-  sed -n "s/^${key}=//p" "$file" | tail -1 | sed -E 's/^[[:space:]]*["'"']?//; s/["'"']?[[:space:]]*$//'
 }
 
 while (($#)); do
@@ -88,32 +77,42 @@ fi
 [[ -f "$ENV_FILE" ]] || fail "environment file not found: $ENV_FILE"
 [[ -f "$SITE_CONF" ]] || fail "Nginx site config not found: $SITE_CONF"
 
-if [[ -z "$PUBLIC_URL" && -n "$DOMAIN" ]]; then
-  PUBLIC_URL="https://${DOMAIN#http://}"
-  PUBLIC_URL="${PUBLIC_URL/https:\/\/https:\/\/}"
-fi
-
-if [[ -z "$PUBLIC_URL" ]]; then
-  for key in SMARTYARD_PUBLIC_BASE_URL APP_PUBLIC_URL PUBLIC_BACKEND_BASE_URL CORS_ORIGIN; do
-    value="$(read_env_value "$key" "$ENV_FILE")"
-    if [[ -n "$value" && "$value" != "*" ]]; then
-      PUBLIC_URL="$value"
-      break
-    fi
-  done
-fi
-
-[[ -n "$PUBLIC_URL" ]] || fail "public URL cannot be determined; use --public-url or configure APP_PUBLIC_URL"
-
-read -r PUBLIC_ORIGIN PUBLIC_HOST PUBLIC_PORT < <(
-  python3 - "$PUBLIC_URL" <<'PY'
+mapfile -t PUBLIC_PARTS < <(
+  python3 - "$ENV_FILE" "$PUBLIC_URL" "$DOMAIN" <<'PY'
+from pathlib import Path
 from urllib.parse import urlparse
 import ipaddress
 import sys
 
-raw = sys.argv[1].strip().strip('"').strip("'")
+env_path = Path(sys.argv[1])
+explicit = sys.argv[2].strip()
+domain = sys.argv[3].strip()
+
+def env_values(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for raw in path.read_text(encoding='utf-8').splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+values = env_values(env_path)
+candidates = [
+    explicit,
+    domain,
+    values.get('SMARTYARD_PUBLIC_BASE_URL', ''),
+    values.get('APP_PUBLIC_URL', ''),
+    values.get('PUBLIC_BACKEND_BASE_URL', ''),
+    values.get('CORS_ORIGIN', ''),
+]
+raw = next((value for value in candidates if value and value != '*'), '')
+if not raw:
+    raise SystemExit('public URL cannot be determined; use --public-url or configure APP_PUBLIC_URL')
 if '://' not in raw:
     raw = 'https://' + raw
+
 parsed = urlparse(raw)
 if parsed.scheme not in {'http', 'https'} or not parsed.hostname:
     raise SystemExit('invalid public URL')
@@ -125,8 +124,6 @@ try:
 except ValueError:
     authority_host = host
 
-# This repair is specifically for HTTPS publication. Preserve an explicit
-# non-default port, otherwise use the standard HTTPS port.
 port = parsed.port
 if port in {None, 80, 443}:
     port = 443
@@ -134,15 +131,22 @@ if port in {None, 80, 443}:
 else:
     origin = f'https://{authority_host}:{port}'
 
-print(origin, host, port)
+print(origin)
+print(host)
+print(port)
 PY
 )
+
+((${#PUBLIC_PARTS[@]} == 3)) || fail "public URL resolver returned incomplete data"
+PUBLIC_ORIGIN="${PUBLIC_PARTS[0]}"
+PUBLIC_HOST="${PUBLIC_PARTS[1]}"
+PUBLIC_PORT="${PUBLIC_PARTS[2]}"
 
 python3 - "$CORS_TEST_ORIGIN" <<'PY'
 from urllib.parse import urlparse
 import sys
-p = urlparse(sys.argv[1])
-if p.scheme not in {'http', 'https'} or not p.hostname:
+parsed = urlparse(sys.argv[1])
+if parsed.scheme not in {'http', 'https'} or not parsed.hostname:
     raise SystemExit('invalid CORS test origin')
 PY
 
@@ -162,33 +166,31 @@ from pathlib import Path
 import re
 import sys
 
-ENV_PATH = Path(sys.argv[1])
-CONF_PATH = Path(sys.argv[2])
-ORIGIN = sys.argv[3]
-HOST = sys.argv[4]
-MAX_AGE = sys.argv[5]
-HSTS = f'add_header Strict-Transport-Security "max-age={MAX_AGE}" always;'
+env_path = Path(sys.argv[1])
+conf_path = Path(sys.argv[2])
+origin = sys.argv[3]
+host = sys.argv[4]
+max_age = sys.argv[5]
+hsts = f'add_header Strict-Transport-Security "max-age={max_age}" always;'
 
 
 def update_env(path: Path) -> None:
-    text = path.read_text(encoding='utf-8')
-    lines = text.splitlines()
     wanted = {
-        'APP_PUBLIC_URL': ORIGIN,
-        'SMARTYARD_PUBLIC_BASE_URL': ORIGIN,
-        'CORS_ORIGIN': ORIGIN,
+        'APP_PUBLIC_URL': origin,
+        'SMARTYARD_PUBLIC_BASE_URL': origin,
+        'CORS_ORIGIN': origin,
     }
-    seen: set[str] = set()
     output: list[str] = []
-    for line in lines:
-        match = re.match(r'^([A-Za-z_][A-Za-z0-9_]*)=', line)
+    seen: set[str] = set()
+    for raw in path.read_text(encoding='utf-8').splitlines():
+        match = re.match(r'^([A-Za-z_][A-Za-z0-9_]*)=', raw)
         if match and match.group(1) in wanted:
             key = match.group(1)
             if key not in seen:
                 output.append(f'{key}={wanted[key]}')
                 seen.add(key)
-            continue
-        output.append(line)
+        else:
+            output.append(raw)
     for key, value in wanted.items():
         if key not in seen:
             output.append(f'{key}={value}')
@@ -198,10 +200,9 @@ def update_env(path: Path) -> None:
 def block_end(source: str, opening: int) -> int:
     depth = 0
     for index in range(opening, len(source)):
-        char = source[index]
-        if char == '{':
+        if source[index] == '{':
             depth += 1
-        elif char == '}':
+        elif source[index] == '}':
             depth -= 1
             if depth == 0:
                 return index + 1
@@ -215,7 +216,7 @@ def server_blocks(text: str):
         yield match.start(), end, text[match.start():end]
 
 
-def has_tls_listener(block: str) -> bool:
+def has_tls(block: str) -> bool:
     return bool(re.search(
         r'(?m)^\s*listen\s+(?:[0-9.]+:|\[[^\]]+\]:)?443\b[^;]*\bssl\b[^;]*;',
         block,
@@ -225,19 +226,17 @@ def has_tls_listener(block: str) -> bool:
 def select_server(text: str) -> tuple[int, int, str]:
     tls = []
     for start, end, block in server_blocks(text):
-        if not has_tls_listener(block):
+        if not has_tls(block):
             continue
         tls.append((start, end, block))
         names = re.findall(r'(?m)^\s*server_name\s+([^;]+);', block)
-        if names and HOST in names[0].split():
+        if names and host in names[0].split():
             return start, end, block
     if len(tls) == 1:
         return tls[0]
     if not tls:
         raise RuntimeError('no TLS Nginx server block was found')
-    raise RuntimeError(
-        f'no TLS server_name matches {HOST!r} and multiple TLS vhosts exist'
-    )
+    raise RuntimeError(f'no TLS server_name matches {host!r} and multiple TLS vhosts exist')
 
 
 def ensure_server_name(block: str) -> str:
@@ -245,9 +244,9 @@ def ensure_server_name(block: str) -> str:
     if not match:
         raise RuntimeError('server_name directive was not found in selected TLS vhost')
     names = match.group(2).split()
-    if HOST in names:
+    if host in names:
         return block
-    replacement = f'{match.group(1)}server_name {HOST} {" ".join(names)};'
+    replacement = f'{match.group(1)}server_name {host} {" ".join(names)};'
     return block[:match.start()] + replacement + block[match.end():]
 
 
@@ -266,7 +265,7 @@ def add_server_hsts(block: str) -> str:
     if server_name_index is None:
         raise RuntimeError('server_name directive was not found in selected TLS vhost')
     indent = re.match(r'^(\s*)', lines[server_name_index]).group(1)
-    lines.insert(server_name_index + 1, f'{indent}{HSTS}\n')
+    lines.insert(server_name_index + 1, f'{indent}{hsts}\n')
     return ''.join(lines)
 
 
@@ -276,50 +275,38 @@ def add_location_hsts(block: str) -> str:
         opening = block.find('{', match.start(), match.end())
         end = block_end(block, opening)
         location = block[match.start():end]
-        if (
-            'proxy_pass http://127.0.0.1:3082' in location
-            and 'add_header Access-Control-Allow-Origin' in location
-        ):
+        if 'proxy_pass http://127.0.0.1:3082' in location and 'add_header Access-Control-Allow-Origin' in location:
             matches.append((match.start(), end, location))
 
     for start, end, location in reversed(matches):
-        if HSTS in location:
+        if hsts in location:
             continue
         proxy = re.search(r'(?m)^(\s*)proxy_pass\s+http://127\.0\.0\.1:3082\s*;', location)
         if not proxy:
             raise RuntimeError('3082 location has no canonical proxy_pass line')
-        insertion = proxy.start()
-        indent = proxy.group(1)
-        location = location[:insertion] + f'{indent}{HSTS}\n\n' + location[insertion:]
+        location = location[:proxy.start()] + f'{proxy.group(1)}{hsts}\n\n' + location[proxy.start():]
         block = block[:start] + location + block[end:]
     return block
 
 
-def update_nginx(path: Path) -> None:
-    text = path.read_text(encoding='utf-8')
-    start, end, block = select_server(text)
-    block = ensure_server_name(block)
-    block = add_server_hsts(block)
-    block = add_location_hsts(block)
-    path.write_text(text[:start] + block + text[end:], encoding='utf-8')
-
-
-update_env(ENV_PATH)
-update_nginx(CONF_PATH)
+update_env(env_path)
+text = conf_path.read_text(encoding='utf-8')
+start, end, block = select_server(text)
+block = ensure_server_name(block)
+block = add_server_hsts(block)
+block = add_location_hsts(block)
+conf_path.write_text(text[:start] + block + text[end:], encoding='utf-8')
 
 for key in ('APP_PUBLIC_URL', 'SMARTYARD_PUBLIC_BASE_URL', 'CORS_ORIGIN'):
-    expected = f'{key}={ORIGIN}'
-    actual = ENV_PATH.read_text(encoding='utf-8').splitlines().count(expected)
-    if actual != 1:
-        raise RuntimeError(f'{expected!r} count={actual}, expected=1')
-
-nginx_text = CONF_PATH.read_text(encoding='utf-8')
-if HSTS not in nginx_text:
+    expected = f'{key}={origin}'
+    if env_path.read_text(encoding='utf-8').splitlines().count(expected) != 1:
+        raise RuntimeError(f'{expected!r} was not written exactly once')
+if hsts not in conf_path.read_text(encoding='utf-8'):
     raise RuntimeError('HSTS header was not installed')
 
-print(f'public_origin={ORIGIN}')
-print(f'public_host={HOST}')
-print(f'hsts={HSTS}')
+print(f'public_origin={origin}')
+print(f'public_host={host}')
+print(f'hsts={hsts}')
 PY
 
 if [[ "$DRY_RUN" == "true" ]]; then
@@ -359,31 +346,20 @@ nginx -t
 systemctl reload nginx
 systemctl restart newdomofon-video-backend.service
 systemctl restart newdomofon-smartyard-compat.service
-
 systemctl is-active --quiet nginx.service
 systemctl is-active --quiet newdomofon-video-backend.service
 systemctl is-active --quiet newdomofon-smartyard-compat.service
 
 VERIFY_SCRIPT="/opt/newdomofon-video-master/scripts/verify-smartyard-public-cors.sh"
 [[ -x "$VERIFY_SCRIPT" ]] || VERIFY_SCRIPT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/verify-smartyard-public-cors.sh"
-
-VERIFY_ARGS=(
-  "BASE_URL=$PUBLIC_ORIGIN"
-  "ORIGIN=$CORS_TEST_ORIGIN"
-)
-if [[ -n "$PROBE_ADDRESS" ]]; then
-  VERIFY_ARGS+=("PROBE_ADDRESS=$PROBE_ADDRESS")
-fi
-
-env "${VERIFY_ARGS[@]}" bash "$VERIFY_SCRIPT"
+VERIFY_ENV=("BASE_URL=$PUBLIC_ORIGIN" "ORIGIN=$CORS_TEST_ORIGIN")
+[[ -n "$PROBE_ADDRESS" ]] && VERIFY_ENV+=("PROBE_ADDRESS=$PROBE_ADDRESS")
+env "${VERIFY_ENV[@]}" bash "$VERIFY_SCRIPT"
 
 HSTS_HEADERS="$(mktemp)"
 CURL_ARGS=(-ksS --max-time 10 -D "$HSTS_HEADERS" -o /dev/null)
-if [[ -n "$PROBE_ADDRESS" ]]; then
-  CURL_ARGS+=(--resolve "$PUBLIC_HOST:$PUBLIC_PORT:$PROBE_ADDRESS")
-fi
+[[ -n "$PROBE_ADDRESS" ]] && CURL_ARGS+=(--resolve "$PUBLIC_HOST:$PUBLIC_PORT:$PROBE_ADDRESS")
 curl "${CURL_ARGS[@]}" "$PUBLIC_ORIGIN/"
-
 tr -d '\r' < "$HSTS_HEADERS" |
   grep -Eiq "^Strict-Transport-Security:[[:space:]]*max-age=$HSTS_MAX_AGE([[:space:]]*;.*)?$" ||
   fail "HSTS header was not returned by $PUBLIC_ORIGIN/"
