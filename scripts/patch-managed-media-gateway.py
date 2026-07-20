@@ -120,6 +120,7 @@ def main() -> int:
     if patch_node_resolver(node_aware) and str(node_aware.relative_to(project)) not in changed_files:
         changed_files.append(str(node_aware.relative_to(project)))
 
+    run_patch(project, "patch-smartyard-flussonic-compat.py")
     run_patch(project, "patch-archive-playback-window.py")
     run_patch(project, "patch-archive-seek-navigation.py")
 
