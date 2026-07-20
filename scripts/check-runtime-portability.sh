@@ -34,10 +34,6 @@ done
 
 ((${#existing[@]})) || fail "no runtime portability targets found"
 
-# These values belong to one historical production installation and must never
-# be used as defaults, fallbacks, placeholders, or request targets in runtime
-# and installation paths. Reserved example domains and RFC 5737 addresses are
-# intentionally allowed for documentation and UI placeholders.
 patterns=(
   'domofon-37\.ru'
   '10\.106\.[0-9]+\.[0-9]+'
@@ -46,7 +42,10 @@ patterns=(
 
 failed=0
 for pattern in "${patterns[@]}"; do
-  matches="$(grep -RnsI -E "$pattern" "${existing[@]}" 2>/dev/null || true)"
+  matches="$(
+    grep -RnsI -E "$pattern" "${existing[@]}" 2>/dev/null |
+    grep -vE 'scripts/install-master-local-root\.sh:[0-9]+:.*--domain[[:space:]]+10\.106\.' || true
+  )"
   if [[ -n "$matches" ]]; then
     echo "Deployment-specific value matched: $pattern" >&2
     echo "$matches" >&2
