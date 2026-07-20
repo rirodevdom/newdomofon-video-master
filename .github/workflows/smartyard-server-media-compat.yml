@@ -1,0 +1,163 @@
+name: SmartYard server media compatibility
+
+on:
+  pull_request:
+    paths:
+      - 'integrations/smartyard-server/**'
+      - 'integrations/smartyard-vue/README.md'
+      - 'scripts/patch-smartyard-server-newdomofon-media.py'
+      - 'scripts/install-smartyard-server-newdomofon-compat.sh'
+      - '.github/workflows/smartyard-server-media-compat.yml'
+      - 'scripts/patch-smartyard-vue-newdomofon-media.py'
+      - '.github/workflows/smartyard-vue-direct-media.yml'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout NewDomofon
+        uses: actions/checkout@v4
+
+      - name: Checkout upstream SmartYard server
+        uses: actions/checkout@v4
+        with:
+          repository: rosteleset/AXIOSTV-SmartYard-Server
+          ref: afcc744a7ab5e723c2c40dfd422c3e19b6e5e4b5
+          path: upstream
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install test dependency
+        run: python3 -m pip install requests
+
+      - name: Validate interfaces and server-only policy
+        run: |
+          bash -n scripts/install-smartyard-server-newdomofon-compat.sh
+          python3 -m py_compile \
+            scripts/patch-smartyard-server-newdomofon-media.py \
+            integrations/smartyard-server/newdomofon_media_compat.py
+
+          bash scripts/install-smartyard-server-newdomofon-compat.sh --help \
+            | grep -q 'No SmartYard-Vue source or built frontend is changed'
+
+          test ! -e scripts/patch-smartyard-vue-newdomofon-media.py
+          test ! -e .github/workflows/smartyard-vue-direct-media.yml
+          ! grep -Rqs 'patch-smartyard-vue-newdomofon-media' \
+            integrations scripts README.md docs
+
+      - name: Dry-run installer against upstream server
+        run: |
+          bash scripts/install-smartyard-server-newdomofon-compat.sh \
+            --target "$PWD/upstream/smartyard.py" \
+            --dry-run
+
+      - name: Apply server compatibility twice
+        run: |
+          cp integrations/smartyard-server/newdomofon_media_compat.py \
+            upstream/newdomofon_media_compat.py
+
+          python3 scripts/patch-smartyard-server-newdomofon-media.py \
+            --target upstream/smartyard.py
+          python3 scripts/patch-smartyard-server-newdomofon-media.py \
+            --target upstream/smartyard.py
+
+          python3 -m py_compile \
+            upstream/smartyard.py \
+            upstream/newdomofon_media_compat.py
+
+          test "$(grep -c 'async def cctv_ranges' upstream/smartyard.py)" -eq 1
+          test "$(grep -c 'async def cctv_recPrepare' upstream/smartyard.py)" -eq 1
+          test "$(grep -c 'def newdomofon_smartyard_response_compat' upstream/smartyard.py)" -eq 1
+          grep -q 'fetch_camera_ranges(' upstream/smartyard.py
+          grep -q 'build_camera_export_url(' upstream/smartyard.py
+
+      - name: Test token, ranges, export and response rewriting
+        env:
+          PYTHONPATH: integrations/smartyard-server
+        run: |
+          python3 - <<'PY'
+          from datetime import datetime
+          import json
+          import os
+          from pathlib import Path
+          import tempfile
+
+          import newdomofon_media_compat as compat
+
+          assert compat.select_media_token(
+              'm1.live-token',
+              camera_url='https://new-video.domofon-37.ru/camswm',
+              camera_id=123,
+              stream='camswm',
+          ) == 'm1.live-token'
+          assert compat.select_media_token(
+              'legacy-token',
+              camera_url='https://legacy-video.example/camera',
+          ) == '100legacy-token'
+
+          with tempfile.TemporaryDirectory() as directory:
+              token_file = Path(directory) / 'tokens.json'
+              token_file.write_text(json.dumps({
+                  'camera_ids': {'123': 'mct1.mapped-token'},
+              }), encoding='utf-8')
+              os.environ['NEWDOMOFON_CAMERA_TOKENS_FILE'] = str(token_file)
+              assert compat.select_media_token(
+                  'legacy-user-token',
+                  camera_url='https://new-video.domofon-37.ru/camswm',
+                  camera_id=123,
+                  stream='camswm',
+              ) == 'mct1.mapped-token'
+
+          class FakeHttpResponse:
+              def raise_for_status(self):
+                  return None
+              def json(self):
+                  return [{'stream': 'camswm', 'ranges': [{'from': 100, 'duration': 60}]}]
+
+          captured = {}
+          def fake_get(url, params, timeout):
+              captured.update(url=url, params=params, timeout=timeout)
+              return FakeHttpResponse()
+
+          compat.requests.get = fake_get
+          ranges = compat.fetch_camera_ranges(
+              camera_url='https://new-video.domofon-37.ru/camswm',
+              existing_token='m1.live-token',
+              camera_id=123,
+              stream='camswm',
+          )
+          assert ranges == [{'stream': 'camswm', 'ranges': [{'from': 100, 'duration': 60}]}]
+          assert captured['params']['token'] == 'm1.live-token'
+
+          export_url, duration = compat.build_camera_export_url(
+              camera_url='https://new-video.domofon-37.ru/camswm',
+              existing_token='m1.token+safe',
+              time_from=datetime(2026, 7, 20, 10, 0, 0),
+              time_to=datetime(2026, 7, 20, 10, 10, 0),
+              camera_id=123,
+              stream='camswm',
+          )
+          assert duration == 600
+          assert '/archive-' in export_url
+          assert 'token=m1.token%2Bsafe' in export_url
+
+          class FakeResponse:
+              def __init__(self):
+                  self.headers = {}
+                  self.payload = {'data': [{'id': 123, 'url': 'https://new-video.domofon-37.ru/camswm', 'token': 'm1.live-token'}]}
+                  self.data = None
+              def get_json(self, silent=True):
+                  return self.payload
+              def set_data(self, value):
+                  self.data = value
+
+          class FakeRequest:
+              path = '/api/cctv/all'
+
+          response = compat.apply_smartyard_response_compat(FakeResponse(), FakeRequest())
+          assert response.headers['Access-Control-Allow-Origin'] == '*'
+          assert 'Authorization' in response.headers['Access-Control-Allow-Headers']
+          PY

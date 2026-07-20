@@ -1,0 +1,8 @@
+{
+  "camera_ids": {
+    "123": "m1.REPLACE_WITH_MANAGED_CAMERA_TOKEN"
+  },
+  "streams": {
+    "camswm": "m1.REPLACE_WITH_MANAGED_CAMERA_TOKEN"
+  }
+}

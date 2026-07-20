@@ -1,228 +1,102 @@
-# SmartYard-Vue: события камер NewDomofon
+# SmartYard-Vue и NewDomofon: совместимость без изменения frontend
 
-## Почему события не отображаются автоматически
+Оригинальный `rosteleset/SmartYard-Vue` и локальная сборка с интегрированным плеером должны работать без патчей, пересборки и изменения исходников frontend.
 
-SmartYard-Vue использует два независимых механизма:
+## Поддерживаемый контракт
 
-1. `address/plogDays` и `address/plog` — журнал доступа SmartYard: звонки, открытия дверей, лица и транспорт.
-2. DVR URL камеры — live, архив и экспорт видео.
-
-ONVIF/Hikvision/video-motion события NewDomofon хранятся на назначенной node в локальной SQLite и не являются событиями `plog`. Поэтому стандартный SmartYard-Vue их не запрашивает.
-
-## Новая схема
+NewDomofon master предоставляет стандартные Flussonic-совместимые URL:
 
 ```text
-SmartYard-Vue
-  -> https://master/<stream>/events.json?token=...
-  -> SmartYard event gateway на master
-  -> internal resolver
-  -> короткоживущий scope=events token
-  -> назначенная node
-  -> /cameras/<stream>/events
-  -> SQLite/WAL
+/<stream>/preview.mp4?token=...
+/<stream>/<unix>-preview.mp4?token=...
+/<stream>/index.m3u8?token=...
+/<stream>/index.fmp4.m3u8?token=...
+/<stream>/index-<from>-<duration>.m3u8?token=...
+/<stream>/index-<from>-<duration>.fmp4.m3u8?token=...
+/<stream>/recording_status.json?token=...
+/<stream>/archive-<from>-<duration>.mp4?token=...
 ```
 
-Master не сохраняет event payload и не копирует SQLite.
+`preview.mp4` формируется как неподвижный одно-кадровый MP4 без аудиодорожки. Это предотвращает воспроизведение короткого видео со звуком в штатном autoplay preview-элементе SmartYard-Vue.
 
-## Публичные endpoint
+Master добавляет единый набор CORS и Private Network Access заголовков для OPTIONS и GET/HEAD. Изменять Nginx или JavaScript SmartYard-Vue для live не требуется.
 
-### Список событий
+## Почему нужен серверный адаптер RBT
 
-```http
-GET /<stream>/events.json
-    ?token=<permanent-camera-token>
-    &from=<unix-seconds-or-ISO>
-    &to=<unix-seconds-or-ISO>
-    &type=motion
-    &limit=1000
-```
-
-Ответ:
-
-```json
-{
-  "stream": "OnvifP",
-  "start": "2026-07-10T18:00:00.000Z",
-  "end": "2026-07-10T19:00:00.000Z",
-  "count": 12,
-  "raw_count": 48,
-  "items": [
-    {
-      "id": "...",
-      "camera_id": "...",
-      "stream_name": "OnvifP",
-      "event_type": "motion",
-      "event_state": "true",
-      "occurred_at": "2026-07-10T18:40:10.000Z",
-      "timestamp": 1783708810000,
-      "topic": "tns1:VideoSource/MotionAlarm",
-      "source_name": "V_SRC_000",
-      "data": {}
-    }
-  ]
-}
-```
-
-По умолчанию gateway возвращает только активирующие переходы и подавляет эквивалентные motion topics в небольшом окне. Для отладки всех состояний добавьте:
+Оригинальный SmartYard-Vue получает архивные диапазоны и готовит скачивание через API SmartYard-Server:
 
 ```text
-include_inactive=1
+/mobile/cctv/ranges
+/mobile/cctv/recPrepare
+/mobile/cctv/recDownload
 ```
 
-### Сводка по минутам
+Поэтому compatibility layer устанавливается в AXIOSTV SmartYard-Server на RBT-сервере. Он:
 
-```http
-GET /<stream>/events_summary.json
-    ?token=<permanent-camera-token>
-    &from=<unix-seconds-or-ISO>
-    &to=<unix-seconds-or-ISO>
-```
+- сохраняет штатную авторизацию пользователя;
+- добавляет CORS даже для ответов 4xx;
+- выдаёт managed token для камер NewDomofon в стандартных ответах camera API;
+- получает диапазоны через `recording_status.json`;
+- готовит MP4 через `archive-<from>-<duration>.mp4`;
+- не меняет поведение остальных Flussonic-камер;
+- не изменяет SmartYard-Vue.
 
-## Установка gateway на master
+## Установка на RBT-сервере
 
-После слияния изменения:
+Передайте на RBT-сервер распакованный архив `newdomofon-video-master` и выполните:
 
 ```bash
-cd /opt/newdomofon-video-master
+cd /root/newdomofon-video-master-main
 
-git fetch origin main
-git switch main
-git pull --ff-only origin main
+bash scripts/install-smartyard-server-newdomofon-compat.sh \
+  --rbt-dir /opt/rbt/server \
+  --dry-run
 
-cd backend
-npm ci --include=dev
-npm run build
-npm prune --omit=dev
-
-sudo install -m 0644 \
-  /opt/newdomofon-video-master/deploy/systemd/newdomofon-smartyard-compat.service \
-  /etc/systemd/system/newdomofon-smartyard-compat.service
-
-sudo systemctl daemon-reload
-sudo systemctl restart newdomofon-video-backend.service
-sudo systemctl restart newdomofon-smartyard-compat.service
+sudo bash scripts/install-smartyard-server-newdomofon-compat.sh \
+  --rbt-dir /opt/rbt/server \
+  --service <RBT_SYSTEMD_UNIT>
 ```
 
-Проверка портов:
+Git и доступ к репозиторию на сервере не используются.
 
-```bash
-ss -ltnp | grep -E ':(3000|3082|3083|3084)([[:space:]]|$)'
-```
-
-Назначение:
-
-- `3000` — backend master;
-- `3082` — public media + event gateway;
-- `3083` — legacy compatibility fallback;
-- `3084` — internal node-aware media gateway.
-
-## Проверка event endpoint
-
-```bash
-cd /opt/newdomofon-video-master
-read -rsp 'SmartYard camera URL: ' SMARTYARD_URL
-echo
-SMARTYARD_URL="$SMARTYARD_URL" HOURS=24 \
-  bash scripts/diagnose-smartyard-events.sh
-```
-
-Ожидается:
+Installer создаёт backup в:
 
 ```text
-EVENTS_HTTP=200
-SUMMARY_HTTP=200
-SMARTYARD CAMERA EVENTS VERIFIED
+/var/backups/newdomofon-video/smartyard-server/<timestamp>/
 ```
 
-## Патч SmartYard-Vue для событий
-
-Скрипт:
-
-- создаёт backup `VideoModal.vue`;
-- устанавливает `CameraMotionEvents.vue`;
-- добавляет блок событий в боковую панель видеомодалки;
-- при выборе события открывает архив от `event - 10 секунд` длительностью 30 секунд;
-- повторный запуск безопасен.
-
-```bash
-cd /opt/newdomofon-video-master
-
-SMARTYARD_VUE_DIR=/path/to/SmartYard-Vue \
-  bash scripts/patch-smartyard-vue-camera-events.sh
-```
-
-Сборка отдельной командой:
-
-```bash
-cd /path/to/SmartYard-Vue
-npm ci --include=dev
-npm run build
-```
-
-Или сразу со сборкой:
-
-```bash
-SMARTYARD_VUE_DIR=/path/to/SmartYard-Vue \
-SMARTYARD_VUE_BUILD=1 \
-  bash /opt/newdomofon-video-master/scripts/patch-smartyard-vue-camera-events.sh
-```
-
-## Патч live, превью, архива и скачивания
-
-Оригинальный SmartYard-Vue предполагает, что:
-
-- `preview.mp4` можно автоматически воспроизводить со звуком;
-- архивные диапазоны для любой камеры с `serverType` нужно получать через авторизованный `/mobile/cctv/ranges`;
-- экспорт всегда запускается через `/mobile/cctv/recPrepare` и `/mobile/cctv/recDownload`.
-
-Для permanent managed-token ссылок NewDomofon это лишняя зависимость от SmartYard subscriber session. Патчер:
-
-- делает preview-элементы беззвучными;
-- использует timestamp preview `<unix>-preview.mp4`, то есть один кадр вместо live-фрагмента;
-- кодирует token в HLS URL;
-- получает диапазоны напрямую из `/<stream>/recording_status.json` для `m1.*` и `mct1.*`;
-- скачивает выбранный MP4 напрямую через `/<stream>/archive-<from>-<duration>.mp4`;
-- сохраняет стандартные `/cctv/ranges`, `/cctv/recPrepare` и `/cctv/recDownload` для остальных DVR.
-
-Применение к оригинальной или локально изменённой копии:
-
-```bash
-python3 /opt/newdomofon-video-master/scripts/patch-smartyard-vue-newdomofon-media.py \
-  --project-dir /path/to/SmartYard-Vue
-
-cd /path/to/SmartYard-Vue
-yarn install --frozen-lockfile
-yarn build
-```
-
-Скрипт создаёт резервные копии изменённых файлов в:
+и устанавливает рядом со `smartyard.py` модуль:
 
 ```text
-/path/to/SmartYard-Vue/.newdomofon-backups/media-compat-<timestamp>/
+newdomofon_media_compat.py
 ```
 
-Повторный запуск идемпотентен. Если локальная интеграция уже существенно изменила один из целевых компонентов, patcher завершится до записи несовместимого фрагмента; в этом случае сравните локальный компонент с оригиналом и перенесите те же четыре правила вручную.
+## Managed token
 
-## Rollback SmartYard-Vue
+Если текущий `Users.videotoken` уже содержит `m1.*` или `mct1.*`, дополнительная настройка не нужна.
 
-Путь backup выводится скриптом. Для отката event-патча:
+Иначе создайте root-only mapping:
 
-```bash
-cp -a \
-  /path/to/SmartYard-Vue/.newdomofon-backups/camera-events-<timestamp>/VideoModal.vue.before \
-  /path/to/SmartYard-Vue/src/components/VideoModal.vue
-
-rm -f /path/to/SmartYard-Vue/src/components/CameraMotionEvents.vue
+```text
+/etc/newdomofon-video/smartyard-camera-tokens.json
 ```
 
-Для media-патча восстановите файлы с суффиксом `.before` из соответствующего каталога `media-compat-<timestamp>`.
+Пример находится в:
 
-Затем пересоберите SmartYard-Vue.
+```text
+integrations/smartyard-server/smartyard-camera-tokens.example.json
+```
 
-## Безопасность
+Поддерживается привязка по `camera_id`, имени stream или полному URL. Файл должен иметь права `0600` и не должен попадать в логи или архив исходников.
 
-- permanent camera token остаётся только во внешнем URL;
-- master проверяет его по актуальному `media_secret` назначенной node;
-- node получает отдельный короткоживущий token со scope `events`;
-- `media_secret` в браузер и SmartYard-Server не передаётся;
-- полные token нельзя публиковать в логах, issue или чатах.
+## Проверка
+
+После перезапуска RBT:
+
+1. Оригинальный SmartYard-Vue должен получать HTTP 200 от `/mobile/cctv/ranges`.
+2. Live должен запрашиваться через `/<stream>/index.m3u8` или `index.fmp4.m3u8`.
+3. Preview должен оставаться неподвижным и без звука.
+4. После выбора архивного диапазона должна появляться штатная кнопка скачивания.
+5. `/mobile/cctv/recPrepare` должен вернуть record ID, а `/mobile/cctv/recDownload` — URL готового файла.
+
+Ни исходники, ни собранные assets SmartYard-Vue в этом сценарии не меняются.
