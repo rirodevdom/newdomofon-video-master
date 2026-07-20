@@ -45,8 +45,6 @@ jobs:
           grep -q 'const livePlaylist' \
             scripts/patch-smartyard-flussonic-compat.py
           grep -q 'recording_status' \
-            smarty yard-compat-proxy/server-node-aware.js 2>/dev/null || \
-          grep -q 'recording_status' \
             smartyard-compat-proxy/server-node-aware.js
 
       - name: Validate documented hard boundary
