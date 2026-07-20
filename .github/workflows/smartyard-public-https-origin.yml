@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'scripts/repair-public-https-origin.sh'
+      - 'scripts/verify-smartyard-public-cors.sh'
       - '.github/workflows/smartyard-public-https-origin.yml'
       - 'integrations/smartyard-vue/README.md'
   workflow_dispatch:
@@ -18,7 +19,7 @@ jobs:
         run: |
           bash -n scripts/repair-public-https-origin.sh
           bash scripts/repair-public-https-origin.sh --help \
-            | grep -q 'APP_PUBLIC_URL and SMARTYARD_PUBLIC_BASE_URL'
+            | grep -q 'without a built-in deployment domain'
 
       - name: Prepare TLS fixture
         run: |
@@ -35,7 +36,7 @@ jobs:
           )
           text = text.replace(
               '    server_name _;\n',
-              '    server_name 10.106.1.30 new-video.domofon-37.ru _;\n',
+              '    server_name 192.0.2.10 media.example.test _;\n',
               1,
           )
           path.write_text(text, encoding='utf-8')
@@ -43,11 +44,11 @@ jobs:
 
           cat >/tmp/app.env <<'EOF'
           NODE_ENV=production
-          APP_PUBLIC_URL=http://new-video.domofon-37.ru
-          SMARTYARD_PUBLIC_BASE_URL=http://new-video.domofon-37.ru
+          APP_PUBLIC_URL=http://media.example.test
+          SMARTYARD_PUBLIC_BASE_URL=http://media.example.test
           EOF
 
-      - name: Dry-run twice without touching source files
+      - name: Derive URL from env and dry-run twice
         run: |
           before_env="$(sha256sum /tmp/app.env | awk '{print $1}')"
           before_conf="$(sha256sum /tmp/newdomofon-video.conf | awk '{print $1}')"
@@ -56,12 +57,13 @@ jobs:
             bash scripts/repair-public-https-origin.sh \
               --env-file /tmp/app.env \
               --site-conf /tmp/newdomofon-video.conf \
-              --domain new-video.domofon-37.ru \
-              --probe-address 10.106.1.30 \
+              --probe-address 192.0.2.10 \
+              --test-origin https://client.example.test \
               --dry-run \
               | tee "/tmp/dry-run-$run.log"
 
-            grep -q 'public_origin=https://new-video.domofon-37.ru' "/tmp/dry-run-$run.log"
+            grep -q 'public_origin=https://media.example.test' "/tmp/dry-run-$run.log"
+            grep -q 'public_host=media.example.test' "/tmp/dry-run-$run.log"
             grep -q 'DRY RUN passed' "/tmp/dry-run-$run.log"
             grep -q 'SmartYard-Vue changed=false' "/tmp/dry-run-$run.log"
           done
@@ -69,10 +71,25 @@ jobs:
           test "$before_env" = "$(sha256sum /tmp/app.env | awk '{print $1}')"
           test "$before_conf" = "$(sha256sum /tmp/newdomofon-video.conf | awk '{print $1}')"
 
+      - name: Accept an arbitrary deployment domain
+        run: |
+          cp /tmp/newdomofon-video.conf /tmp/other-domain.conf
+          cp /tmp/app.env /tmp/other-domain.env
+
+          bash scripts/repair-public-https-origin.sh \
+            --env-file /tmp/other-domain.env \
+            --site-conf /tmp/other-domain.conf \
+            --public-url https://camera.customer.example:9443 \
+            --dry-run \
+            | tee /tmp/other-domain.log
+
+          grep -q 'public_origin=https://camera.customer.example:9443' /tmp/other-domain.log
+          grep -q 'public_host=camera.customer.example' /tmp/other-domain.log
+
       - name: Reject missing TLS listener without mutations
         run: |
           cp deploy/nginx/newdomofon-video.conf /tmp/no-tls.conf
-          sed -i 's/server_name _;/server_name new-video.domofon-37.ru _;/' /tmp/no-tls.conf
+          sed -i 's/server_name _;/server_name media.example.test _;/' /tmp/no-tls.conf
           cp /tmp/app.env /tmp/no-tls.env
 
           before_env="$(sha256sum /tmp/no-tls.env | awk '{print $1}')"
@@ -83,13 +100,12 @@ jobs:
             bash scripts/repair-public-https-origin.sh \
               --env-file /tmp/no-tls.env \
               --site-conf /tmp/no-tls.conf \
-              --domain new-video.domofon-37.ru \
               --dry-run 2>&1
           )"
           rc=$?
           set -e
 
           test "$rc" -ne 0
-          grep -q 'TLS listener for new-video.domofon-37.ru:443 was not found' <<<"$output"
+          grep -q 'no TLS Nginx server block was found' <<<"$output"
           test "$before_env" = "$(sha256sum /tmp/no-tls.env | awk '{print $1}')"
           test "$before_conf" = "$(sha256sum /tmp/no-tls.conf | awk '{print $1}')"

@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 CONFIG="${NGINX_CONFIG:-/etc/nginx/sites-available/newdomofon-video.conf}"
 MARKER="# NEWDOMOFON_SMARTYARD_EVENTS_ROUTE_V1"
+CORS_TEST_ORIGIN="${CORS_TEST_ORIGIN:-${ORIGIN:-https://client.invalid}}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP="${CONFIG}.${STAMP}.bak"
 
@@ -17,6 +18,14 @@ for command in nginx python3 curl; do
     exit 1
   }
 done
+
+python3 - "$CORS_TEST_ORIGIN" <<'PY'
+from urllib.parse import urlparse
+import sys
+p = urlparse(sys.argv[1])
+if p.scheme not in {'http', 'https'} or not p.hostname:
+    raise SystemExit('invalid CORS_TEST_ORIGIN')
+PY
 
 if [[ ! -f "$CONFIG" ]]; then
   echo "Nginx config not found: $CONFIG" >&2
@@ -146,7 +155,7 @@ PY
   curl -ksS \
     -D /tmp/newdomofon-events-nginx.headers \
     -o /tmp/newdomofon-events-nginx.json \
-    -H 'Origin: https://test.domofon-37.ru' \
+    -H "Origin: ${CORS_TEST_ORIGIN}" \
     -H 'Access-Control-Request-Private-Network: true' \
     "$EVENT_URL"
 

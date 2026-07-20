@@ -4,7 +4,7 @@ umask 077
 
 ENV_FILE="${ENV_FILE:-/etc/newdomofon-video/app.env}"
 BASE_URL="${BASE_URL:-}"
-ORIGIN="${ORIGIN:-http://smartyard-vue.local}"
+ORIGIN="${ORIGIN:-${CORS_TEST_ORIGIN:-https://client.invalid}}"
 PROBE_ADDRESS="${PROBE_ADDRESS:-}"
 
 fail() {
@@ -15,23 +15,56 @@ fail() {
 command -v curl >/dev/null 2>&1 || fail "curl is required"
 command -v python3 >/dev/null 2>&1 || fail "python3 is required"
 
-if [[ -z "$BASE_URL" && -r "$ENV_FILE" ]]; then
-  BASE_URL="$(sed -n 's/^APP_PUBLIC_URL=//p' "$ENV_FILE" | tail -1)"
-fi
-BASE_URL="${BASE_URL:-http://127.0.0.1}"
-
-read -r PROBE_SCHEME PROBE_HOST PROBE_PORT < <(
-  python3 - "$BASE_URL" <<'PY'
+mapfile -t PROBE_PARTS < <(
+  python3 - "$ENV_FILE" "$BASE_URL" <<'PY'
+from pathlib import Path
 from urllib.parse import urlparse
 import sys
 
-parsed = urlparse(sys.argv[1])
-if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-    raise SystemExit("invalid BASE_URL")
-port = parsed.port or (443 if parsed.scheme == "https" else 80)
-print(parsed.scheme, parsed.hostname, port)
+env_path = Path(sys.argv[1])
+explicit = sys.argv[2].strip()
+values = {}
+if env_path.is_file():
+    for raw in env_path.read_text(encoding='utf-8').splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        values[key.strip()] = value.strip().strip('"').strip("'")
+
+candidates = [
+    explicit,
+    values.get('SMARTYARD_PUBLIC_BASE_URL', ''),
+    values.get('APP_PUBLIC_URL', ''),
+    values.get('PUBLIC_BACKEND_BASE_URL', ''),
+    values.get('CORS_ORIGIN', ''),
+    'http://127.0.0.1',
+]
+raw = next(value for value in candidates if value and value != '*')
+if '://' not in raw:
+    raw = 'https://' + raw
+parsed = urlparse(raw)
+if parsed.scheme not in {'http', 'https'} or not parsed.hostname:
+    raise SystemExit('invalid BASE_URL')
+port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+print(parsed.scheme)
+print(parsed.hostname)
+print(port)
 PY
 )
+
+((${#PROBE_PARTS[@]} == 3)) || fail "BASE_URL resolver returned incomplete data"
+PROBE_SCHEME="${PROBE_PARTS[0]}"
+PROBE_HOST="${PROBE_PARTS[1]}"
+PROBE_PORT="${PROBE_PARTS[2]}"
+
+python3 - "$ORIGIN" <<'PY'
+from urllib.parse import urlparse
+import sys
+parsed = urlparse(sys.argv[1])
+if parsed.scheme not in {'http', 'https'} or not parsed.hostname:
+    raise SystemExit('invalid ORIGIN')
+PY
 
 CURL_BASE="${PROBE_SCHEME}://${PROBE_HOST}"
 if ! { [[ "$PROBE_SCHEME" == http && "$PROBE_PORT" == 80 ]] || [[ "$PROBE_SCHEME" == https && "$PROBE_PORT" == 443 ]]; }; then
@@ -52,12 +85,9 @@ build_probe_candidates() {
     return
   fi
 
-  for candidate in 127.0.0.1; do
-    if [[ -z "${seen[$candidate]:-}" ]]; then
-      seen[$candidate]=1
-      printf '%s\n' "$candidate"
-    fi
-  done
+  candidate=127.0.0.1
+  seen[$candidate]=1
+  printf '%s\n' "$candidate"
 
   if command -v ip >/dev/null 2>&1; then
     candidate="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -1 || true)"
@@ -92,9 +122,7 @@ select_probe_address() {
       --resolve "${PROBE_HOST}:${PROBE_PORT}:${candidate}"
       -o /dev/null
     )
-    if [[ "$PROBE_SCHEME" == https ]]; then
-      args+=(-k)
-    fi
+    [[ "$PROBE_SCHEME" == https ]] && args+=(-k)
 
     if curl "${args[@]}" "${CURL_BASE%/}/" >/dev/null 2>&1; then
       printf '%s\n' "$candidate"
@@ -113,9 +141,7 @@ COMMON_CURL_ARGS=(
   --max-time 10
   --resolve "${PROBE_HOST}:${PROBE_PORT}:${ACTIVE_PROBE_ADDRESS}"
 )
-if [[ "$PROBE_SCHEME" == https ]]; then
-  COMMON_CURL_ARGS+=(-k)
-fi
+[[ "$PROBE_SCHEME" == https ]] && COMMON_CURL_ARGS+=(-k)
 
 check_response() {
   local method="$1"
@@ -148,33 +174,26 @@ check_response() {
 from pathlib import Path
 import sys
 
-path = Path(sys.argv[1])
+header_path = Path(sys.argv[1])
 method = sys.argv[2]
 url_path = sys.argv[3]
-lines = path.read_text(encoding="latin-1").splitlines()
-
 headers = {}
-for line in lines:
-    if ":" not in line:
+for line in header_path.read_text(encoding='latin-1').splitlines():
+    if ':' not in line:
         continue
-    name, value = line.split(":", 1)
+    name, value = line.split(':', 1)
     headers.setdefault(name.strip().lower(), []).append(value.strip())
 
-origins = headers.get("access-control-allow-origin", [])
-if origins != ["*"]:
+origins = headers.get('access-control-allow-origin', [])
+if origins != ['*']:
     raise SystemExit(f"{method} {url_path}: expected one ACAO '*', got {origins}")
-
-methods = ",".join(headers.get("access-control-allow-methods", [])).upper()
-if "GET" not in methods or "OPTIONS" not in methods:
-    raise SystemExit(f"{method} {url_path}: incomplete allow-methods: {methods!r}")
-
-private_network = headers.get("access-control-allow-private-network", [])
-if private_network != ["true"]:
-    raise SystemExit(
-        f"{method} {url_path}: expected one private-network header, got {private_network}"
-    )
-
-print(f"OK {method} {url_path}: canonical CORS")
+methods = ','.join(headers.get('access-control-allow-methods', [])).upper()
+if 'GET' not in methods or 'OPTIONS' not in methods:
+    raise SystemExit(f'{method} {url_path}: incomplete allow-methods: {methods!r}')
+private_network = headers.get('access-control-allow-private-network', [])
+if private_network != ['true']:
+    raise SystemExit(f'{method} {url_path}: expected one private-network header, got {private_network}')
+print(f'OK {method} {url_path}: canonical CORS')
 PY
 
   rm -f "$headers"
@@ -195,3 +214,4 @@ done
 echo "SmartYard public CORS smoke test passed."
 echo "probe_base=$CURL_BASE"
 echo "probe_address=$ACTIVE_PROBE_ADDRESS"
+echo "test_origin=$ORIGIN"
