@@ -53,14 +53,24 @@ for pattern in "${patterns[@]}"; do
   fi
 done
 
-# Catch the most dangerous generic regression: a production public URL being
-# assigned as a shell fallback instead of read from env or supplied arguments.
+# Catch the most dangerous generic regression: a public URL assigned as an
+# executable fallback instead of being read from env or supplied arguments.
+fallback_targets=(
+  "$ROOT/backend/src"
+  "$ROOT/frontend/src"
+  "$ROOT/smartyard-compat-proxy"
+  "$ROOT/scripts/lib/master-one-shot-install.sh"
+  "$ROOT/scripts/install-master-local-root.sh"
+  "$ROOT/scripts/repair-public-https-origin.sh"
+  "$ROOT/scripts/verify-smartyard-public-cors.sh"
+)
+
 fallbacks="$(
   grep -RnsI -E \
     '(APP_PUBLIC_URL|SMARTYARD_PUBLIC_BASE_URL|PUBLIC_BACKEND_BASE_URL|MASTER_DOMAIN|BACKEND_URL|PUBLIC_URL)=.*https?://[A-Za-z0-9._-]+' \
-    "$ROOT/scripts" "$ROOT/backend/src" "$ROOT/frontend/src" \
+    "${fallback_targets[@]}" \
     2>/dev/null |
-  grep -vE 'example\.(com|org|net)|example\.test|127\.0\.0\.1|localhost' || true
+  grep -vE 'example\.(com|org|net)|example\.test|client\.invalid|127\.0\.0\.1|localhost' || true
 )"
 
 if [[ -n "$fallbacks" ]]; then
