@@ -104,7 +104,6 @@ def normalize_media_block(block: str) -> str:
         f"{indent}proxy_hide_header Access-Control-Expose-Headers;",
         f"{indent}proxy_hide_header Access-Control-Allow-Private-Network;",
         f"{indent}proxy_hide_header Access-Control-Max-Age;",
-        "",
     ]
     normalized_lines = (
         with_private_network[:insertion]
