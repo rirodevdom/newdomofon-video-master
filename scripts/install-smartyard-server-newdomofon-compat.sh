@@ -114,9 +114,13 @@ rollback() {
 }
 trap rollback ERR
 
-install -m 0640 "$MODULE_SOURCE" "$MODULE_TARGET"
+TARGET_UID="$(stat -c '%u' "$TARGET_FILE")"
+TARGET_GID="$(stat -c '%g' "$TARGET_FILE")"
+install -o "$TARGET_UID" -g "$TARGET_GID" -m 0644 \
+  "$MODULE_SOURCE" "$MODULE_TARGET"
 python3 "$PATCHER" --target "$TARGET_FILE"
 python3 "$PATCHER" --target "$TARGET_FILE"
+chown "$TARGET_UID:$TARGET_GID" "$TARGET_FILE" "$MODULE_TARGET"
 python3 -m py_compile "$TARGET_FILE" "$MODULE_TARGET"
 
 if [[ "$NO_RESTART" != "true" ]]; then
