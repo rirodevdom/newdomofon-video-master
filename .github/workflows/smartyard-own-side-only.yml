@@ -51,7 +51,7 @@ jobs:
       - name: Validate documented hard boundary
         run: |
           grep -q '/mobile/cctv/ranges' integrations/smartyard-vue/README.md
-          grep -q 'невозможно исправить только NewDomofon-серверами' \
+          grep -q 'Эти маршруты принадлежат SmartYard-Server' \
             integrations/smartyard-vue/README.md
           grep -q 'cannot be repaired solely from the NewDomofon servers' \
             docs/SMARTYARD_OWN_SIDE_ONLY.md
