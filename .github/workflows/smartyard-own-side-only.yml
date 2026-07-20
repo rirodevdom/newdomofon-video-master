@@ -29,9 +29,10 @@ jobs:
           test ! -e integrations/smartyard-server/smartyard-camera-tokens.example.json
           test ! -e scripts/patch-smartyard-vue-newdomofon-media.py
 
-          ! grep -RqsE \
-            '/opt/rbt/server|patch.*SmartYard-Server|modify.*smartyard\.py' \
-            integrations/smartyard-vue docs/SMARTYARD_OWN_SIDE_ONLY.md
+          ! grep -Rqs 'install-smartyard-server-newdomofon-compat' \
+            scripts integrations --exclude='README.md'
+          ! grep -Rqs 'patch-smartyard-server-newdomofon-media' \
+            scripts integrations --exclude='README.md'
 
       - name: Validate NewDomofon direct media contract
         run: |
