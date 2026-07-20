@@ -27,6 +27,29 @@ Master предоставляет Flussonic-совместимые URL:
 
 Master добавляет canonical CORS и Private Network Access для `OPTIONS` и `GET/HEAD`. Node обслуживает live, snapshot, архивное воспроизведение и MP4-экспорт.
 
+## HTTPS и старые HTTP URL
+
+Страница SmartYard загружается по HTTPS, поэтому HLS-запросы через `fetch()` или XHR к `http://new-video.domofon-37.ru` являются blockable mixed content. Обычный HTTP-редирект не помогает: браузер может заблокировать такой запрос до обращения к серверу.
+
+Исправление выполняется только на NewDomofon master:
+
+```bash
+sudo bash scripts/repair-public-https-origin.sh \
+  --domain new-video.domofon-37.ru \
+  --probe-address 10.106.1.30
+```
+
+Сценарий:
+
+- устанавливает `APP_PUBLIC_URL=https://new-video.domofon-37.ru`;
+- устанавливает `SMARTYARD_PUBLIC_BASE_URL=https://new-video.domofon-37.ru`;
+- добавляет HSTS к корневому HTTPS-ответу и media/event locations;
+- не меняет SmartYard-Vue или RBT;
+- создаёт backup и откатывает изменения при неуспешной проверке;
+- проверяет HTTPS CORS и HSTS после перезапуска сервисов.
+
+После применения нужно один раз открыть `https://new-video.domofon-37.ru/` в используемом профиле браузера. Браузер сохранит HSTS-политику для этого имени и последующие старые HTTP URL сможет переписывать на HTTPS до mixed-content проверки.
+
 ## Тестовая страница с нашим плеером
 
 Наш плеер должен работать напрямую с NewDomofon и не вызывать API RBT для media-функций:
