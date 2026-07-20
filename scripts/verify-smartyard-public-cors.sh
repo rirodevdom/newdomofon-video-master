@@ -5,6 +5,7 @@ umask 077
 ENV_FILE="${ENV_FILE:-/etc/newdomofon-video/app.env}"
 BASE_URL="${BASE_URL:-}"
 ORIGIN="${ORIGIN:-http://smartyard-vue.local}"
+PROBE_ADDRESS="${PROBE_ADDRESS:-}"
 
 fail() {
   echo "ERROR: $*" >&2
@@ -37,10 +38,80 @@ if ! { [[ "$PROBE_SCHEME" == http && "$PROBE_PORT" == 80 ]] || [[ "$PROBE_SCHEME
   CURL_BASE="${CURL_BASE}:${PROBE_PORT}"
 fi
 
+is_ipv4() {
+  [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+}
+
+build_probe_candidates() {
+  local candidate
+  local -A seen=()
+
+  if [[ -n "$PROBE_ADDRESS" ]]; then
+    is_ipv4 "$PROBE_ADDRESS" || fail "PROBE_ADDRESS must be an IPv4 address: $PROBE_ADDRESS"
+    printf '%s\n' "$PROBE_ADDRESS"
+    return
+  fi
+
+  for candidate in 127.0.0.1; do
+    if [[ -z "${seen[$candidate]:-}" ]]; then
+      seen[$candidate]=1
+      printf '%s\n' "$candidate"
+    fi
+  done
+
+  if command -v ip >/dev/null 2>&1; then
+    candidate="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -1 || true)"
+    if [[ -n "$candidate" ]] && is_ipv4 "$candidate" && [[ -z "${seen[$candidate]:-}" ]]; then
+      seen[$candidate]=1
+      printf '%s\n' "$candidate"
+    fi
+  fi
+
+  if command -v hostname >/dev/null 2>&1; then
+    while read -r candidate; do
+      if is_ipv4 "$candidate" && [[ -z "${seen[$candidate]:-}" ]]; then
+        seen[$candidate]=1
+        printf '%s\n' "$candidate"
+      fi
+    done < <(hostname -I 2>/dev/null | tr ' ' '\n' | sed '/^$/d' || true)
+  fi
+}
+
+select_probe_address() {
+  local candidate
+  local -a args
+  local -a attempted=()
+
+  while read -r candidate; do
+    [[ -n "$candidate" ]] || continue
+    attempted+=("$candidate")
+    args=(
+      -sS
+      --connect-timeout 2
+      --max-time 4
+      --resolve "${PROBE_HOST}:${PROBE_PORT}:${candidate}"
+      -o /dev/null
+    )
+    if [[ "$PROBE_SCHEME" == https ]]; then
+      args+=(-k)
+    fi
+
+    if curl "${args[@]}" "${CURL_BASE%/}/" >/dev/null 2>&1; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done < <(build_probe_candidates)
+
+  fail "cannot connect to ${PROBE_HOST}:${PROBE_PORT} through local addresses: ${attempted[*]:-none}. Set PROBE_ADDRESS to the address where Nginx listens."
+}
+
+ACTIVE_PROBE_ADDRESS="$(select_probe_address)"
+
 COMMON_CURL_ARGS=(
   -sS
+  --connect-timeout 3
   --max-time 10
-  --resolve "${PROBE_HOST}:${PROBE_PORT}:127.0.0.1"
+  --resolve "${PROBE_HOST}:${PROBE_PORT}:${ACTIVE_PROBE_ADDRESS}"
 )
 if [[ "$PROBE_SCHEME" == https ]]; then
   COMMON_CURL_ARGS+=(-k)
@@ -68,7 +139,10 @@ check_response() {
     )
   fi
 
-  curl "${args[@]}" "${CURL_BASE%/}$path" || true
+  if ! curl "${args[@]}" "${CURL_BASE%/}$path"; then
+    rm -f "$headers"
+    fail "$method $path: connection failed via ${ACTIVE_PROBE_ADDRESS}:${PROBE_PORT} for host ${PROBE_HOST}"
+  fi
 
   python3 - "$headers" "$method" "$path" <<'PY'
 from pathlib import Path
@@ -120,3 +194,4 @@ done
 
 echo "SmartYard public CORS smoke test passed."
 echo "probe_base=$CURL_BASE"
+echo "probe_address=$ACTIVE_PROBE_ADDRESS"

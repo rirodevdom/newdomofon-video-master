@@ -94,3 +94,51 @@ jobs:
           if options.count('add_header Access-Control-Allow-Private-Network "true" always;') != 1:
               raise SystemExit('OPTIONS private-network header missing or duplicated')
           PY
+
+      - name: Verify local probe address selection and connection errors
+        run: |
+          cat >/tmp/cors_probe_server.py <<'PY'
+          from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+          class Handler(BaseHTTPRequestHandler):
+              def _reply(self):
+                  self.send_response(204 if self.command == 'OPTIONS' else 404)
+                  self.send_header('Access-Control-Allow-Origin', '*')
+                  self.send_header('Access-Control-Allow-Methods', 'GET,HEAD,OPTIONS')
+                  self.send_header('Access-Control-Allow-Headers', '*')
+                  self.send_header('Access-Control-Allow-Private-Network', 'true')
+                  self.end_headers()
+
+              do_OPTIONS = _reply
+              do_GET = _reply
+
+              def log_message(self, *_args):
+                  pass
+
+          ThreadingHTTPServer(('127.0.0.1', 18080), Handler).serve_forever()
+          PY
+
+          python3 /tmp/cors_probe_server.py &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          sleep 1
+
+          BASE_URL='http://probe.local:18080' \
+          PROBE_ADDRESS='127.0.0.1' \
+          ORIGIN='https://test.domofon-37.ru' \
+            bash scripts/verify-smartyard-public-cors.sh \
+            | tee /tmp/probe-success.log
+
+          grep -q 'probe_address=127.0.0.1' /tmp/probe-success.log
+
+          set +e
+          BASE_URL='http://probe.local:18080' \
+          PROBE_ADDRESS='127.0.0.2' \
+            bash scripts/verify-smartyard-public-cors.sh \
+            >/tmp/probe-failure.log 2>&1
+          RC=$?
+          set -e
+
+          test "$RC" -ne 0
+          grep -q 'cannot connect to probe.local:18080' /tmp/probe-failure.log
+          grep -q 'Set PROBE_ADDRESS' /tmp/probe-failure.log
