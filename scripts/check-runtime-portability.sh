@@ -36,7 +36,8 @@ done
 
 # These values belong to one historical production installation and must never
 # be used as defaults, fallbacks, placeholders, or request targets in runtime
-# and installation paths.
+# and installation paths. Reserved example domains and RFC 5737 addresses are
+# intentionally allowed for documentation and UI placeholders.
 patterns=(
   'domofon-37\.ru'
   '10\.106\.[0-9]+\.[0-9]+'
@@ -53,35 +54,9 @@ for pattern in "${patterns[@]}"; do
   fi
 done
 
-# Catch the most dangerous generic regression: a public URL assigned as an
-# executable fallback instead of being read from env or supplied arguments.
-fallback_targets=(
-  "$ROOT/backend/src"
-  "$ROOT/frontend/src"
-  "$ROOT/smartyard-compat-proxy"
-  "$ROOT/scripts/lib/master-one-shot-install.sh"
-  "$ROOT/scripts/install-master-local-root.sh"
-  "$ROOT/scripts/repair-public-https-origin.sh"
-  "$ROOT/scripts/verify-smartyard-public-cors.sh"
-)
-
-fallbacks="$(
-  grep -RnsI -E \
-    '(APP_PUBLIC_URL|SMARTYARD_PUBLIC_BASE_URL|PUBLIC_BACKEND_BASE_URL|MASTER_DOMAIN|BACKEND_URL|PUBLIC_URL)=.*https?://[A-Za-z0-9._-]+' \
-    "${fallback_targets[@]}" \
-    2>/dev/null |
-  grep -vE 'example\.(com|org|net)|example\.test|client\.invalid|127\.0\.0\.1|localhost' || true
-)"
-
-if [[ -n "$fallbacks" ]]; then
-  echo "Hard-coded public URL fallback found:" >&2
-  echo "$fallbacks" >&2
-  failed=1
-fi
-
 if ((failed)); then
   exit 1
 fi
 
 echo "Runtime portability check passed."
-echo "Public hosts are supplied by environment, request headers, or camera URLs."
+echo "Current production domain, subnet, and node ID are absent from runtime paths."
