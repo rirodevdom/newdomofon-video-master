@@ -24,6 +24,7 @@ patchers=(
   scripts/patch-auto-token-detach-guard.py
   scripts/patch-system-managed-token-ui.py
   scripts/patch-managed-media-gateway.py
+  scripts/patch-smartyard-flussonic-compat.py
 )
 
 for relative in "${patchers[@]}"; do
@@ -35,7 +36,8 @@ python3 -m py_compile \
   "$PROJECT_DIR/scripts/patch-manual-auto-managed-tokens.py" \
   "$PROJECT_DIR/scripts/patch-auto-token-detach-guard.py" \
   "$PROJECT_DIR/scripts/patch-system-managed-token-ui.py" \
-  "$PROJECT_DIR/scripts/patch-managed-media-gateway.py"
+  "$PROJECT_DIR/scripts/patch-managed-media-gateway.py" \
+  "$PROJECT_DIR/scripts/patch-smartyard-flussonic-compat.py"
 
 # Сохраняем проверенный порядок production deploy. Collision fix запускается
 # повторно после основного patcher, поскольку тот добавляет resolver branches.
@@ -63,6 +65,14 @@ grep -q "rest.startsWith('cameras/')" \
   "$PROJECT_DIR/smartyard-compat-proxy/server-formats-gateway.js"
 grep -q "managed-resolver-rejected" \
   "$PROJECT_DIR/smartyard-compat-proxy/server-node-aware.js"
+grep -q "const livePlaylist = /^(?:live|index|video)" \
+  "$PROJECT_DIR/smartyard-compat-proxy/server-node-aware.js"
+grep -q "oldestAllowedMs" \
+  "$PROJECT_DIR/smartyard-compat-proxy/server-node-aware.js"
+grep -q "newdomofon-smartyard-still-preview" \
+  "$PROJECT_DIR/smartyard-compat-proxy/server-preview-gateway.js"
+grep -q "'-frames:v', '1'" \
+  "$PROJECT_DIR/smartyard-compat-proxy/server-preview-gateway.js"
 grep -q "manualManagedCameraTokenDigest(body.token)" \
   "$PROJECT_DIR/backend/src/routes/internalSmartYard.ts"
 grep -q "auto_assign_new_cameras" \

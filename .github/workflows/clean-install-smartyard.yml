@@ -8,6 +8,7 @@ on:
       - 'scripts/prepare-master-runtime-source.sh'
       - 'scripts/verify-smartyard-public-cors.sh'
       - 'scripts/patch-managed-media-gateway.py'
+      - 'scripts/patch-smartyard-flussonic-compat.py'
       - 'scripts/patch-manual-auto-managed-tokens.py'
       - 'smartyard-compat-proxy/**'
       - 'backend/src/routes/internalSmartYard.ts'
@@ -25,12 +26,15 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Validate shell interfaces
+      - name: Validate shell and Python interfaces
         run: |
           bash -n scripts/prepare-master-runtime-source.sh
           bash -n scripts/verify-smartyard-public-cors.sh
           bash -n scripts/install-master-manual-local-root.sh
           bash -n scripts/install-master-from-archive.sh
+          python3 -m py_compile \
+            scripts/patch-managed-media-gateway.py \
+            scripts/patch-smartyard-flussonic-compat.py
 
           bash scripts/install-master-manual-local-root.sh --help \
             >/tmp/manual-root-help.txt
@@ -41,22 +45,52 @@ jobs:
           grep -q 'After installation it validates public media' /tmp/manual-root-help.txt
           grep -q 'CORS for HLS' /tmp/manual-root-help.txt
 
-      - name: Apply clean-install runtime preparation
+      - name: Apply clean-install runtime preparation twice
         run: |
           PROJECT_DIR="$PWD" bash scripts/prepare-master-runtime-source.sh \
-            >/tmp/clean-install-runtime.txt
+            >/tmp/clean-install-runtime-first.txt
+          PROJECT_DIR="$PWD" bash scripts/prepare-master-runtime-source.sh \
+            >/tmp/clean-install-runtime-second.txt
 
-          grep -q 'repository_access_used=false' /tmp/clean-install-runtime.txt
+          grep -q 'repository_access_used=false' /tmp/clean-install-runtime-first.txt
+          grep -q 'repository_access_used=false' /tmp/clean-install-runtime-second.txt
           grep -q "rest.startsWith('cameras/')" \
             smartyard-compat-proxy/server-node-aware.js
           grep -q "rest.startsWith('cameras/')" \
             smartyard-compat-proxy/server-formats-gateway.js
           grep -q 'managed-resolver-rejected' \
             smartyard-compat-proxy/server-node-aware.js
+          grep -q 'const livePlaylist = /^(?:live|index|video)' \
+            smartyard-compat-proxy/server-node-aware.js
+          grep -q 'oldestAllowedMs' \
+            smartyard-compat-proxy/server-node-aware.js
+          grep -q 'newdomofon-smartyard-still-preview' \
+            smartyard-compat-proxy/server-preview-gateway.js
+          grep -q "'-frames:v', '1'" \
+            smartyard-compat-proxy/server-preview-gateway.js
+          grep -q "'-an'" \
+            smartyard-compat-proxy/server-preview-gateway.js
           grep -q 'manualManagedCameraTokenDigest(body.token)' \
             backend/src/routes/internalSmartYard.ts
           grep -q 'auto_assign_new_cameras' \
             backend/src/routes/managedCameraTokens.ts
+
+      - name: Validate Flussonic URL aliases
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path('smartyard-compat-proxy/server-node-aware.js').read_text(encoding='utf-8')
+
+          required = (
+              "(?:live|index|video)(?:\\.fmp4)?\\.m3u8",
+              "(?:archive|index|video|mono)-\\d+-(?:now|\\d+)(?:\\.fmp4)?\\.m3u8",
+              "timeshift_(?:abs|rel)-\\d+(?:\\.fmp4)?\\.m3u8",
+              "Math.max(oldestAllowedMs, Math.min(requestedStartMs, endMs - 1000))",
+          )
+          for marker in required:
+              if marker not in text:
+                  raise SystemExit(f'missing compatibility marker: {marker}')
+          PY
 
       - name: Validate gateway syntax
         run: |
