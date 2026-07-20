@@ -4,7 +4,7 @@ umask 077
 
 ENV_FILE="${ENV_FILE:-/etc/newdomofon-video/app.env}"
 BASE_URL="${BASE_URL:-}"
-ORIGIN="${ORIGIN:-http://smartyard-vue.local}"
+ORIGIN="${ORIGIN:-${CORS_TEST_ORIGIN:-https://client.invalid}}"
 PROBE_ADDRESS="${PROBE_ADDRESS:-}"
 
 fail() {
@@ -12,11 +12,24 @@ fail() {
   exit 1
 }
 
+read_env_value() {
+  local key="$1"
+  local file="$2"
+  [[ -r "$file" ]] || return 0
+  sed -n "s/^${key}=//p" "$file" | tail -1 | sed -E 's/^[[:space:]]*["'"']?//; s/["'"']?[[:space:]]*$//'
+}
+
 command -v curl >/dev/null 2>&1 || fail "curl is required"
 command -v python3 >/dev/null 2>&1 || fail "python3 is required"
 
 if [[ -z "$BASE_URL" && -r "$ENV_FILE" ]]; then
-  BASE_URL="$(sed -n 's/^APP_PUBLIC_URL=//p' "$ENV_FILE" | tail -1)"
+  for key in SMARTYARD_PUBLIC_BASE_URL APP_PUBLIC_URL PUBLIC_BACKEND_BASE_URL CORS_ORIGIN; do
+    value="$(read_env_value "$key" "$ENV_FILE")"
+    if [[ -n "$value" && "$value" != "*" ]]; then
+      BASE_URL="$value"
+      break
+    fi
+  done
 fi
 BASE_URL="${BASE_URL:-http://127.0.0.1}"
 
@@ -25,13 +38,24 @@ read -r PROBE_SCHEME PROBE_HOST PROBE_PORT < <(
 from urllib.parse import urlparse
 import sys
 
-parsed = urlparse(sys.argv[1])
-if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-    raise SystemExit("invalid BASE_URL")
-port = parsed.port or (443 if parsed.scheme == "https" else 80)
+raw = sys.argv[1].strip().strip('"').strip("'")
+if '://' not in raw:
+    raw = 'https://' + raw
+parsed = urlparse(raw)
+if parsed.scheme not in {'http', 'https'} or not parsed.hostname:
+    raise SystemExit('invalid BASE_URL')
+port = parsed.port or (443 if parsed.scheme == 'https' else 80)
 print(parsed.scheme, parsed.hostname, port)
 PY
 )
+
+python3 - "$ORIGIN" <<'PY'
+from urllib.parse import urlparse
+import sys
+p = urlparse(sys.argv[1])
+if p.scheme not in {'http', 'https'} or not p.hostname:
+    raise SystemExit('invalid ORIGIN')
+PY
 
 CURL_BASE="${PROBE_SCHEME}://${PROBE_HOST}"
 if ! { [[ "$PROBE_SCHEME" == http && "$PROBE_PORT" == 80 ]] || [[ "$PROBE_SCHEME" == https && "$PROBE_PORT" == 443 ]]; }; then
@@ -151,30 +175,30 @@ import sys
 path = Path(sys.argv[1])
 method = sys.argv[2]
 url_path = sys.argv[3]
-lines = path.read_text(encoding="latin-1").splitlines()
+lines = path.read_text(encoding='latin-1').splitlines()
 
 headers = {}
 for line in lines:
-    if ":" not in line:
+    if ':' not in line:
         continue
-    name, value = line.split(":", 1)
+    name, value = line.split(':', 1)
     headers.setdefault(name.strip().lower(), []).append(value.strip())
 
-origins = headers.get("access-control-allow-origin", [])
-if origins != ["*"]:
+origins = headers.get('access-control-allow-origin', [])
+if origins != ['*']:
     raise SystemExit(f"{method} {url_path}: expected one ACAO '*', got {origins}")
 
-methods = ",".join(headers.get("access-control-allow-methods", [])).upper()
-if "GET" not in methods or "OPTIONS" not in methods:
-    raise SystemExit(f"{method} {url_path}: incomplete allow-methods: {methods!r}")
+methods = ','.join(headers.get('access-control-allow-methods', [])).upper()
+if 'GET' not in methods or 'OPTIONS' not in methods:
+    raise SystemExit(f'{method} {url_path}: incomplete allow-methods: {methods!r}')
 
-private_network = headers.get("access-control-allow-private-network", [])
-if private_network != ["true"]:
+private_network = headers.get('access-control-allow-private-network', [])
+if private_network != ['true']:
     raise SystemExit(
-        f"{method} {url_path}: expected one private-network header, got {private_network}"
+        f'{method} {url_path}: expected one private-network header, got {private_network}'
     )
 
-print(f"OK {method} {url_path}: canonical CORS")
+print(f'OK {method} {url_path}: canonical CORS')
 PY
 
   rm -f "$headers"
@@ -195,3 +219,4 @@ done
 echo "SmartYard public CORS smoke test passed."
 echo "probe_base=$CURL_BASE"
 echo "probe_address=$ACTIVE_PROBE_ADDRESS"
+echo "test_origin=$ORIGIN"
