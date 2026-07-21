@@ -26,7 +26,7 @@
             <th>Internal URL</th>
             <th>Камеры</th>
             <th>Устройства</th>
-            <th>Диск</th>
+            <th>Диски</th>
             <th>Версия</th>
             <th>Last seen</th>
             <th></th>
@@ -40,7 +40,18 @@
             <td class="text-truncate" style="max-width: 220px">{{ node.internal_url || '—' }}</td>
             <td>{{ node.camera_count || 0 }}</td>
             <td>{{ node.device_count || 0 }}</td>
-            <td>{{ storageLabel(node) }}</td>
+            <td>
+              <div>{{ storageLabel(node) }}</div>
+              <v-chip
+                v-if="storagePoolSize(node) > 1"
+                class="mt-1"
+                size="x-small"
+                variant="tonal"
+                :color="storagePoolColor(node)"
+              >
+                {{ storagePoolAvailability(node) }}
+              </v-chip>
+            </td>
             <td>{{ node.version || '—' }}</td>
             <td>{{ formatDate(node.last_seen_at) }}</td>
             <td class="text-right">
@@ -225,6 +236,31 @@ function storageLabel(node: any) {
   const free = bytes(storage.free_bytes || storage.available_bytes || storage.free || storage.available || storage.freeBytes);
   const used = bytes(storage.used_bytes || storage.used || storage.usedBytes) || (total && free ? Math.max(total - free, 0) : 0);
   return `${formatBytes(used)} / ${formatBytes(total)}`;
+}
+
+function storagePoolSize(node: any) {
+  const storage = node.storage || {};
+  const roots = Array.isArray(storage.roots) ? storage.roots : [];
+  return Math.max(1, Number(storage.pool_size || roots.length || 1));
+}
+
+function storagePoolAvailable(node: any) {
+  const storage = node.storage || {};
+  const roots = Array.isArray(storage.roots) ? storage.roots : [];
+  const fallback = roots.filter((root: any) => String(root?.state || '') !== 'critical').length;
+  return Math.max(0, Number(storage.available_roots ?? fallback ?? storagePoolSize(node)));
+}
+
+function storagePoolAvailability(node: any) {
+  return `${storagePoolAvailable(node)} из ${storagePoolSize(node)} доступны`;
+}
+
+function storagePoolColor(node: any) {
+  const storage = node.storage || {};
+  const state = String(storage.state || '').toLowerCase();
+  if (state === 'critical' || storagePoolAvailable(node) === 0) return 'error';
+  if (state === 'degraded' || state === 'warning' || storagePoolAvailable(node) < storagePoolSize(node)) return 'warning';
+  return 'success';
 }
 
 function formatDate(value: string | null) {
