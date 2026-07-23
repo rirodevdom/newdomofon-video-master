@@ -35,8 +35,9 @@ jobs:
       - name: Build original SmartYard-Vue
         working-directory: /tmp/SmartYard-Vue-original
         run: |
-          npm ci
-          npm run build
+          corepack enable
+          yarn install --frozen-lockfile
+          yarn build
 
   validate-custom-adapter:
     runs-on: ubuntu-latest
