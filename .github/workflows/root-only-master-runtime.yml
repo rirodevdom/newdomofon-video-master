@@ -1,0 +1,43 @@
+name: Root-only master runtime
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/install-rtsp-gateway.sh'
+      - 'scripts/patch-root-only-master-runtime.py'
+      - 'scripts/deploy-master-preserve-nginx.sh'
+      - 'scripts/prepare-master-runtime-source.sh'
+      - '.github/workflows/root-only-master-runtime.yml'
+  pull_request:
+    paths:
+      - 'scripts/install-rtsp-gateway.sh'
+      - 'scripts/patch-root-only-master-runtime.py'
+      - 'scripts/deploy-master-preserve-nginx.sh'
+      - 'scripts/prepare-master-runtime-source.sh'
+      - '.github/workflows/root-only-master-runtime.yml'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate and apply root-only compatibility twice
+        run: |
+          python3 -m py_compile scripts/patch-root-only-master-runtime.py
+          bash -n scripts/deploy-master-preserve-nginx.sh
+          bash -n scripts/prepare-master-runtime-source.sh
+
+          python3 scripts/patch-root-only-master-runtime.py --project-dir "$PWD"
+          python3 scripts/patch-root-only-master-runtime.py --project-dir "$PWD"
+
+          bash -n scripts/install-rtsp-gateway.sh
+          test "$(grep -c 'RUNTIME_GROUP="${NEWDOMOFON_RUNTIME_GROUP:-}"' scripts/install-rtsp-gateway.sh)" -eq 1
+          grep -q 'RUNTIME_GROUP=root' scripts/install-rtsp-gateway.sh
+          ! grep -q -- '-g newdomofon' scripts/install-rtsp-gateway.sh
+          ! grep -q 'chown root:newdomofon' scripts/install-rtsp-gateway.sh
+          grep -q 'patch-root-only-master-runtime.py' scripts/deploy-master-preserve-nginx.sh
+          grep -q 'patch-root-only-master-runtime.py' scripts/prepare-master-runtime-source.sh
