@@ -172,13 +172,17 @@ bash -n "$SHIP_STAGE/offline-update.sh"
 bash -n "$SHIP_STAGE/update-installed-project.sh"
 
 FINAL_ARCHIVE="$OUTPUT_DIR/${BUNDLE_NAME}.tar.gz"
+FINAL_NAME="$(basename "$FINAL_ARCHIVE")"
 tar -C "$SHIP_PARENT" -czf "$FINAL_ARCHIVE" "$BUNDLE_NAME"
-sha256sum "$FINAL_ARCHIVE" >"$FINAL_ARCHIVE.sha256"
+(
+  cd "$OUTPUT_DIR"
+  sha256sum "$FINAL_NAME" >"${FINAL_NAME}.sha256"
+)
 
 cat >"$OUTPUT_DIR/${BUNDLE_NAME}.txt" <<EOF
 project_type=master
 source_commit=$COMMIT
-archive=$(basename "$FINAL_ARCHIVE")
+archive=$FINAL_NAME
 sha256=$(sha256sum "$FINAL_ARCHIVE" | awk '{print $1}')
 platform=$(node -p 'process.platform')
 architecture=$(node -p 'process.arch')
