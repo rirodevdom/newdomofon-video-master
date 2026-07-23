@@ -60,5 +60,5 @@ jobs:
           grep -q '/mobile/cctv/recPrepare' integrations/smartyard-vue/README.md
           grep -q '/mobile/cctv/recDownload' integrations/smartyard-vue/README.md
           grep -q 'source-патча' integrations/smartyard-vue/README.md
-          grep -q 'does not modify SmartYard-Server' docs/SMARTYARD_OWN_SIDE_ONLY.md
+          grep -q 'modify SmartYard-Server or RBT' docs/SMARTYARD_OWN_SIDE_ONLY.md
           grep -q 'polls `recDownload` until a URL is returned' docs/SMARTYARD_OWN_SIDE_ONLY.md
