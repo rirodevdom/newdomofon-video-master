@@ -3,7 +3,6 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { query } from '../db.js';
 import { verifyManagedCameraToken } from '../services/managedCameraToken.js';
-import { smartYardTokenCandidates } from '../services/smartYardTokenCompatibility.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 
 export const internalSmartYardRouter = Router();
@@ -69,14 +68,6 @@ function parseToken(rawToken: string): { body: string; signature: string; payloa
   } catch {
     return null;
   }
-}
-
-function firstTokenMatch<T>(tokens: string[], verifier: (token: string) => T | null): T | null {
-  for (const token of tokens) {
-    const match = verifier(token);
-    if (match) return match;
-  }
-  return null;
 }
 
 function verifySignature(body: string, signature: string, secret: string): boolean {
@@ -158,13 +149,11 @@ internalSmartYardRouter.use(requireInternal);
 
 internalSmartYardRouter.post('/resolve', asyncHandler(async (req, res) => {
   const body = resolveSchema.parse(req.body || {});
-  const tokenCandidates = smartYardTokenCandidates(body.token);
 
   // Managed tokens are master-owned, reusable and explicitly assigned to cameras.
   // They never reach a node directly: master resolves them and mints a short-lived
-  // node token for each request. Original SmartYard-Server prepends `100` only
-  // for recPrepare, so the exact token is always verified before that fallback.
-  const managedPayload = firstTokenMatch(tokenCandidates, verifyManagedCameraToken);
+  // node token for each request.
+  const managedPayload = verifyManagedCameraToken(body.token);
   if (managedPayload) {
     const streamResult = streamNameSchema.safeParse(String(body.stream_name || '').trim());
     if (!streamResult.success) return res.status(400).json({ error: 'stream_name is required for managed tokens' });
@@ -235,7 +224,7 @@ internalSmartYardRouter.post('/resolve', asyncHandler(async (req, res) => {
   }
 
   // Compatibility path for already-issued camera tokens.
-  const parsed = firstTokenMatch(tokenCandidates, parseToken);
+  const parsed = parseToken(body.token);
   if (!parsed) return res.status(401).json({ error: 'Invalid playback token' });
 
   const cameraIdResult = cameraIdSchema.safeParse(String(parsed.payload.camera_id || '').trim());
