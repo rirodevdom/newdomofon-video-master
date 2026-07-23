@@ -50,6 +50,8 @@ jobs:
       - name: Build and offline-verify bundle
         run: |
           OUTPUT_DIR="$RUNNER_TEMP/offline-bundles" \
+          WORK_ROOT="$RUNNER_TEMP/offline-work" \
+          KEEP_WORK=true \
             bash scripts/build-offline-update-bundle.sh
 
       - name: Inspect bundle metadata
@@ -57,6 +59,17 @@ jobs:
           cat "$RUNNER_TEMP"/offline-bundles/*.txt
           cd "$RUNNER_TEMP/offline-bundles"
           sha256sum -c ./*.tar.gz.sha256
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: offline-master-diagnostics-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/offline-work/logs/**
+            ${{ runner.temp }}/offline-work/stage/**/.offline-update/manifest.env
+          if-no-files-found: warn
+          retention-days: 7
 
       - uses: actions/upload-artifact@v4
         with:
