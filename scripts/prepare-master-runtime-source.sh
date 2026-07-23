@@ -19,6 +19,7 @@ command -v python3 >/dev/null 2>&1 || fail "python3 is required"
 command -v node >/dev/null 2>&1 || fail "node is required"
 
 patchers=(
+  scripts/patch-root-only-master-runtime.py
   scripts/fix-manual-token-resolver-variable.py
   scripts/patch-manual-auto-managed-tokens.py
   scripts/patch-auto-token-detach-guard.py
@@ -32,12 +33,15 @@ for relative in "${patchers[@]}"; do
 done
 
 python3 -m py_compile \
+  "$PROJECT_DIR/scripts/patch-root-only-master-runtime.py" \
   "$PROJECT_DIR/scripts/fix-manual-token-resolver-variable.py" \
   "$PROJECT_DIR/scripts/patch-manual-auto-managed-tokens.py" \
   "$PROJECT_DIR/scripts/patch-auto-token-detach-guard.py" \
   "$PROJECT_DIR/scripts/patch-system-managed-token-ui.py" \
   "$PROJECT_DIR/scripts/patch-managed-media-gateway.py" \
   "$PROJECT_DIR/scripts/patch-smartyard-flussonic-compat.py"
+
+python3 "$PROJECT_DIR/scripts/patch-root-only-master-runtime.py" --project-dir "$PROJECT_DIR"
 
 # Сохраняем проверенный порядок production deploy. Collision fix запускается
 # повторно после основного patcher, поскольку тот добавляет resolver branches.
@@ -59,6 +63,12 @@ done
 # Эти маркеры обязательны именно для clean install. Без них media-запросы
 # могут попасть в legacy fallback, а браузер маскирует upstream 401/404/502
 # сообщением CORS.
+grep -q "RUNTIME_GROUP=\"\${NEWDOMOFON_RUNTIME_GROUP:-}\"" \
+  "$PROJECT_DIR/scripts/install-rtsp-gateway.sh"
+! grep -q -- '-g newdomofon' \
+  "$PROJECT_DIR/scripts/install-rtsp-gateway.sh"
+! grep -q 'chown root:newdomofon' \
+  "$PROJECT_DIR/scripts/install-rtsp-gateway.sh"
 grep -q "rest.startsWith('cameras/')" \
   "$PROJECT_DIR/smartyard-compat-proxy/server-node-aware.js"
 grep -q "rest.startsWith('cameras/')" \
