@@ -31,8 +31,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22.12.0'
-          cache: npm
-          cache-dependency-path: /tmp/SmartYard-Vue-original/package-lock.json
 
       - name: Build original SmartYard-Vue
         working-directory: /tmp/SmartYard-Vue-original
