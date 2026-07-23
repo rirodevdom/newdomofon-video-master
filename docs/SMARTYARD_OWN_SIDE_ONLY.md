@@ -1,6 +1,8 @@
-# SmartYard integration: only NewDomofon-controlled components
+# SmartYard integration: NewDomofon-controlled media and opt-in frontend source patch
 
-This project must not require changes on RBT, SmartYard-Server, the original SmartYard-Vue deployment, or any third-party server.
+The core NewDomofon deployment must not require changes on RBT or SmartYard-Server. Media compatibility remains implemented by NewDomofon master/node.
+
+A deployment owner may explicitly apply the repository's source-only patch to a SmartYard-Vue checkout that they control, build it normally, and publish that build. This is different from modifying a third-party server or injecting code into already published assets.
 
 ## What NewDomofon can guarantee
 
@@ -14,22 +16,47 @@ NewDomofon master/node provide direct media endpoints for a camera URL returned 
 - `/<stream>/archive-<from>-<duration>.mp4?token=...` — direct download;
 - canonical CORS and Private Network Access headers.
 
-The locally controlled test page may replace its player and call these endpoints directly. No other SmartYard-Vue component has to be changed.
+The locally controlled test page may replace its player and call these endpoints directly.
 
-## Hard external boundary
+## SmartYard API boundary
 
-The unmodified upstream SmartYard-Vue uses its configured SmartYard API for archive discovery and download when `camera.serverType` is present:
+SmartYard-Vue uses its configured SmartYard API for prepared downloads:
 
-- `/mobile/cctv/ranges`;
 - `/mobile/cctv/recPrepare`;
 - `/mobile/cctv/recDownload`.
 
-Those requests are sent to the SmartYard/RBT origin, not to the NewDomofon media origin. NewDomofon cannot alter, answer, redirect, or add CORS to those responses from another origin.
+Those requests are sent to the SmartYard/RBT origin, not to the NewDomofon media origin. NewDomofon cannot alter, answer, redirect, or add CORS to responses from another origin.
 
-Therefore, with no changes to SmartYard-Vue and no changes to SmartYard/RBT:
+SmartYard-Server may return a preparation id first and keep returning `204 No Content` until the MP4 is ready. An unmodified frontend that checks `recDownload` once cannot show a URL that appears later.
 
-- preview and live can work through NewDomofon direct media URLs;
-- archive and download can work in the locally controlled test player by using NewDomofon direct endpoints;
-- archive controls in an unmodified upstream SmartYard-Vue cannot be repaired solely from the NewDomofon servers if its `/mobile/cctv/*` calls fail.
+## Allowed source-level compatibility patch
 
-This is a browser origin and application-contract boundary, not a missing NewDomofon route.
+The deployment owner may run:
+
+```bash
+python3 scripts/patch-smartyard-download-ready-link.py \
+  --project-dir /path/to/SmartYard-Vue
+```
+
+The patch:
+
+- changes only the owner's SmartYard-Vue source checkout;
+- supports original `CustomControls.vue` and integrated `smartyardPlayerKit.ts`;
+- polls `recDownload` until a URL is returned;
+- displays a persistent download link;
+- creates a source backup;
+- contains no deployment-specific hostname or IP address.
+
+Afterward the owner runs the normal frontend build and publishes its `dist` directory.
+
+## Forbidden actions
+
+NewDomofon tooling must not:
+
+- modify SmartYard-Server or RBT;
+- inject code into a live third-party frontend at runtime;
+- rewrite already published third-party assets silently;
+- include a production domain or installation IP as a fallback;
+- apply source changes without an explicit owner command.
+
+This preserves the browser-origin and application-contract boundary while allowing the owner to repair a frontend behavior in a copy they are authorized to build and deploy.

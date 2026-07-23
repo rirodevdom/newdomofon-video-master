@@ -1,4 +1,4 @@
-name: SmartYard own-side-only boundary
+name: SmartYard integration boundary
 
 on:
   pull_request:
@@ -7,6 +7,7 @@ on:
       - 'docs/SMARTYARD_OWN_SIDE_ONLY.md'
       - 'smartyard-compat-proxy/**'
       - 'scripts/patch-smartyard-flussonic-compat.py'
+      - 'scripts/patch-smartyard-download-ready-link.py'
       - 'scripts/prepare-master-runtime-source.sh'
       - 'deploy/nginx/newdomofon-video.conf'
       - '.github/workflows/smartyard-own-side-only.yml'
@@ -21,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Reject external SmartYard modifications
+      - name: Reject SmartYard server and runtime asset modifications
         run: |
           test ! -e scripts/install-smartyard-server-newdomofon-compat.sh
           test ! -e scripts/patch-smartyard-server-newdomofon-media.py
@@ -33,6 +34,10 @@ jobs:
             scripts integrations --exclude='README.md'
           ! grep -Rqs 'patch-smartyard-server-newdomofon-media' \
             scripts integrations --exclude='README.md'
+
+          ! grep -RqsE '(/var/www/|assets/.*\.js|dist/.*\.js)' \
+            scripts/patch-smartyard-download-ready-link.py \
+            integrations/smartyard-vue/download-ready-link
 
       - name: Validate NewDomofon direct media contract
         run: |
@@ -48,10 +53,12 @@ jobs:
           grep -q 'recording_status' \
             smartyard-compat-proxy/server-node-aware.js
 
-      - name: Validate documented hard boundary
+      - name: Validate explicit source-only frontend patch
         run: |
-          grep -q '/mobile/cctv/ranges' integrations/smartyard-vue/README.md
-          grep -q 'Эти маршруты принадлежат SmartYard-Server' \
-            integrations/smartyard-vue/README.md
-          grep -q 'cannot be repaired solely from the NewDomofon servers' \
-            docs/SMARTYARD_OWN_SIDE_ONLY.md
+          test -f scripts/patch-smartyard-download-ready-link.py
+          test -f integrations/smartyard-vue/download-ready-link/smartYardRecordingDownload.ts
+          grep -q '/mobile/cctv/recPrepare' integrations/smartyard-vue/README.md
+          grep -q '/mobile/cctv/recDownload' integrations/smartyard-vue/README.md
+          grep -q 'source-патча' integrations/smartyard-vue/README.md
+          grep -q 'modify SmartYard-Server or RBT' docs/SMARTYARD_OWN_SIDE_ONLY.md
+          grep -q 'polls `recDownload` until a URL is returned' docs/SMARTYARD_OWN_SIDE_ONLY.md

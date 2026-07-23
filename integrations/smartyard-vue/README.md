@@ -102,27 +102,44 @@ export function normalizeMediaUrl(rawUrl: string, pageUrl = window.location.href
 
 Такое правило работает с любым hostname и не содержит знания о домене владельца установки.
 
-## Оригинальный SmartYard-Vue
+## Оригинальный и интегрированный SmartYard-Vue
 
-Preview, live и Flussonic-совместимый архив оригинального интерфейса работают, когда SmartYard-Server передаёт браузеру корректный HTTPS URL камеры.
-
-При наличии отдельного `camera.serverType` некоторые сборки оригинального frontend могут получать архив и готовить скачивание через API своего SmartYard-Server:
+Оригинальный frontend и сборка с NewDomofon Player Kit могут готовить скачивание через API своего SmartYard-Server:
 
 ```text
-/mobile/cctv/ranges
 /mobile/cctv/recPrepare
 /mobile/cctv/recDownload
 ```
 
-Эти маршруты принадлежат SmartYard-Server. NewDomofon не должен содержать жёстких ссылок на их hostname и не может добавлять CORS к ответу другого origin.
+`recPrepare` возвращает идентификатор операции. Готовая ссылка может появиться позже, а `recDownload` до этого возвращает `204 No Content` или пустой ответ. Однократная проверка теряет будущую ссылку.
 
-## Запрещённый сценарий
+Опциональный source-патч:
 
-В репозитории не должно быть установщиков или patcher-скриптов, которые:
+```bash
+python3 scripts/patch-smartyard-download-ready-link.py \
+  --project-dir /path/to/SmartYard-Vue
+```
 
-- содержат production-домен или адрес конкретной инсталляции как fallback;
-- изменяют сторонний SmartYard-Server;
-- изменяют исходники оригинального SmartYard-Vue;
-- изменяют собранные assets стороннего SmartYard-Vue.
+исправляет оба поддерживаемых варианта:
 
-Подробная фиксация границы находится в `docs/SMARTYARD_OWN_SIDE_ONLY.md`.
+- `src/components/CustomControls.vue` оригинального интерфейса;
+- `src/lib/smartyardPlayerKit.ts` интегрированного плеера.
+
+Frontend опрашивает `recDownload` до готовности и показывает постоянную ссылку. Подробности: `download-ready-link/README.md`.
+
+## Допустимая граница изменения
+
+NewDomofon не изменяет SmartYard-Server и не пытается отвечать за чужой origin. Допускается только явное применение владельцем установки source-патча к собственной копии SmartYard-Vue с последующей штатной сборкой.
+
+Запрещено:
+
+- хранить production-домен или IP конкретной инсталляции как fallback;
+- изменять SmartYard-Server;
+- внедрять код в уже опубликованные сторонние assets во время выполнения;
+- молча изменять чужую инсталляцию без явного запуска владельцем.
+
+Разрешено:
+
+- патчить исходники собственной копии SmartYard-Vue;
+- собирать и публиковать её штатным `npm run build`;
+- сохранять backup исходников перед изменением.
