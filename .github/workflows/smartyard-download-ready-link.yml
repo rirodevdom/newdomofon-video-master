@@ -1,0 +1,86 @@
+name: SmartYard ready download link
+
+on:
+  pull_request:
+    paths:
+      - 'integrations/smartyard-vue/download-ready-link/**'
+      - 'scripts/patch-smartyard-download-ready-link.py'
+      - '.github/workflows/smartyard-download-ready-link.yml'
+      - 'integrations/smartyard-vue/README.md'
+  workflow_dispatch:
+
+jobs:
+  validate-original:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch original SmartYard-Vue
+        run: git clone --depth 1 https://github.com/rosteleset/SmartYard-Vue.git /tmp/SmartYard-Vue-original
+
+      - name: Apply source patch twice
+        run: |
+          python3 -m py_compile scripts/patch-smartyard-download-ready-link.py
+          python3 scripts/patch-smartyard-download-ready-link.py --project-dir /tmp/SmartYard-Vue-original --no-backup
+          python3 scripts/patch-smartyard-download-ready-link.py --project-dir /tmp/SmartYard-Vue-original --no-backup
+          test "$(grep -c 'prepareSmartYardRecordingDownload({' /tmp/SmartYard-Vue-original/src/components/CustomControls.vue)" -eq 1
+          test "$(grep -c 'showSmartYardDownloadReady(url)' /tmp/SmartYard-Vue-original/src/components/CustomControls.vue)" -eq 1
+          test -f /tmp/SmartYard-Vue-original/src/lib/smartYardRecordingDownload.ts
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+          cache: npm
+          cache-dependency-path: /tmp/SmartYard-Vue-original/package-lock.json
+
+      - name: Build original SmartYard-Vue
+        working-directory: /tmp/SmartYard-Vue-original
+        run: |
+          npm ci
+          npm run build
+
+  validate-custom-adapter:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare custom adapter fixture
+        run: |
+          mkdir -p /tmp/SmartYard-Vue-custom/src/lib
+          cat > /tmp/SmartYard-Vue-custom/src/lib/smartyardPlayerKit.ts <<'TS'
+          import dayjs from "dayjs";
+          import type { Camera } from "@/types/camera";
+
+          type ApiGet = <T>(path: string, params?: object) => Promise<T>;
+
+          const notifyRecordingPreparation = (callback?: () => void): void => {
+            callback?.();
+          };
+
+          const startSmartYardDownload = async (
+            camera: Camera,
+            apiGet: ApiGet,
+            fromMs: number,
+            toMs: number,
+            notifyDownloadStarted?: () => void,
+            signal?: AbortSignal,
+          ): Promise<void> => {
+            const from = dayjs(fromMs).format("YYYY-MM-DD HH:mm:ss");
+            const to = dayjs(toMs).format("YYYY-MM-DD HH:mm:ss");
+            const id = await apiGet<string | number>("/cctv/recPrepare", { id: camera.id, from, to });
+            await apiGet("/cctv/recDownload", { id });
+            notifyRecordingPreparation(notifyDownloadStarted);
+          };
+
+          export const createSmartYardPlayerConfig = () => ({ startSmartYardDownload });
+          TS
+
+      - name: Apply custom source patch twice
+        run: |
+          python3 scripts/patch-smartyard-download-ready-link.py --project-dir /tmp/SmartYard-Vue-custom --no-backup
+          python3 scripts/patch-smartyard-download-ready-link.py --project-dir /tmp/SmartYard-Vue-custom --no-backup
+          test "$(grep -c 'prepareSmartYardRecordingDownload({' /tmp/SmartYard-Vue-custom/src/lib/smartyardPlayerKit.ts)" -eq 1
+          test "$(grep -c 'showSmartYardDownloadReady(url)' /tmp/SmartYard-Vue-custom/src/lib/smartyardPlayerKit.ts)" -eq 1
+          test -f /tmp/SmartYard-Vue-custom/src/lib/smartYardRecordingDownload.ts
