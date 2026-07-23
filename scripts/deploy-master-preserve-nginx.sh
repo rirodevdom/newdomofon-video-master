@@ -14,6 +14,11 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
+ROOT_ONLY_PATCHER="$PROJECT_DIR/scripts/patch-root-only-master-runtime.py"
+if [[ -f "$ROOT_ONLY_PATCHER" ]]; then
+  python3 "$ROOT_ONLY_PATCHER" --project-dir "$PROJECT_DIR"
+fi
+
 install -d -o root -g root -m 0700 "$BACKUP_DIR"
 
 HAD_SITE=0
