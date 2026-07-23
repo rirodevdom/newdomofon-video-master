@@ -1,0 +1,83 @@
+name: Offline master update bundle
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'offline-update.sh'
+      - 'update-installed-project.sh'
+      - 'scripts/build-offline-update-bundle.sh'
+      - 'scripts/deploy-master.sh'
+      - 'scripts/prepare-master-runtime-source.sh'
+      - 'backend/package.json'
+      - 'backend/package-lock.json'
+      - 'frontend/package.json'
+      - 'frontend/package-lock.json'
+      - 'public-events-proxy/package.json'
+      - 'public-events-proxy/package-lock.json'
+      - '.github/workflows/offline-update-bundle.yml'
+      - 'docs/OFFLINE_UPDATE.md'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+            public-events-proxy/package-lock.json
+
+      - name: Validate scripts
+        run: |
+          bash -n offline-update.sh
+          bash -n scripts/build-offline-update-bundle.sh
+          bash -n update-installed-project.sh
+
+      - name: Build and offline-verify bundle
+        run: |
+          OUTPUT_DIR="$RUNNER_TEMP/offline-bundles" \
+          WORK_ROOT="$RUNNER_TEMP/offline-work" \
+          KEEP_WORK=true \
+            bash scripts/build-offline-update-bundle.sh
+
+      - name: Inspect bundle metadata
+        run: |
+          cat "$RUNNER_TEMP"/offline-bundles/*.txt
+          cd "$RUNNER_TEMP/offline-bundles"
+          sha256sum -c ./*.tar.gz.sha256
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: offline-master-diagnostics-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/offline-work/logs/**
+            ${{ runner.temp }}/offline-work/stage/**/.offline-update/manifest.env
+          if-no-files-found: warn
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: newdomofon-video-master-offline-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/offline-bundles/*.tar.gz
+            ${{ runner.temp }}/offline-bundles/*.tar.gz.sha256
+            ${{ runner.temp }}/offline-bundles/*.txt
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
