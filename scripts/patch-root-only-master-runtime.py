@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-RUNTIME_BLOCK = '''RUNTIME_GROUP="${NEWD...:-}"
+RUNTIME_BLOCK = '''RUNTIME_GROUP="${NEWDOMOFON_RUNTIME_GROUP:-}"
 if [[ -z "$RUNTIME_GROUP" ]]; then
   if getent group newdomofon >/dev/null 2>&1; then
     RUNTIME_GROUP=newdomofon
@@ -21,7 +21,7 @@ def patch_rtsp_installer(path: Path) -> bool:
 
     # Keep compatibility with installations that still have the historical
     # group, but make root-only masters the default when it is absent.
-    if 'RUNTIME_GROUP="${NEWD...:-}"' not in text:
+    if 'RUNTIME_GROUP="${NEWDOMOFON_RUNTIME_GROUP:-}"' not in text:
         anchor = 'BACKUP="/opt/newdomofon-video-migration-backups/rtsp-gateway-$STAMP"\n'
         if anchor not in text:
             raise RuntimeError(f"RTSP runtime-group anchor not found in {path}")
