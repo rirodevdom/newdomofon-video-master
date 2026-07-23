@@ -1,0 +1,44 @@
+name: SmartYard server-only download
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/patch-managed-media-gateway.py'
+      - 'scripts/patch-smartyard-server-export-timeout.py'
+      - 'smartyard-compat-proxy/server-node-aware.js'
+      - 'docs/SMARTYARD_OWN_SIDE_ONLY.md'
+      - 'integrations/smartyard-vue/**'
+      - '.github/workflows/smartyard-server-only-download.yml'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+
+      - name: Enforce unmodified SmartYard frontend boundary
+        run: |
+          test ! -e scripts/patch-smartyard-download-ready-link.py
+          test ! -e integrations/smartyard-vue/download-ready-link
+          ! grep -Rqs 'prepareSmartYardRecordingDownload' scripts integrations
+          grep -q 'изменяют исходники оригинального SmartYard-Vue' integrations/smartyard-vue/README.md
+
+      - name: Apply server compatibility twice
+        run: |
+          python3 -m py_compile \
+            scripts/patch-managed-media-gateway.py \
+            scripts/patch-smartyard-server-export-timeout.py
+
+          python3 scripts/patch-managed-media-gateway.py --project-dir "$PWD"
+          python3 scripts/patch-managed-media-gateway.py --project-dir "$PWD"
+
+          test "$(grep -c 'const exportTimeoutMs = Math.max(120000' smartyard-compat-proxy/server-node-aware.js)" -eq 1
+          test "$(grep -c 'nodeFetch(context, path, req, exportTimeoutMs)' smartyard-compat-proxy/server-node-aware.js)" -eq 1
+          grep -q 'SMARTYARD_EXPORT_TIMEOUT_MS || 15 \* 60 \* 1000' smartyard-compat-proxy/server-node-aware.js
+          node --check smartyard-compat-proxy/server-node-aware.js
