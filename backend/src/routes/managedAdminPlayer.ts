@@ -35,17 +35,28 @@ function effectiveArchiveStorage(row: ManagedPlayerRow): 'node' | 'device' | 'bo
   return row.archive_storage || row.device_archive_storage || 'node';
 }
 
-function publicCameraBase(req: AuthRequest): string {
-  const configuredCameraBase = String(process.env.SMARTYARD_PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
-  if (configuredCameraBase) return configuredCameraBase;
+function cameraGatewayBase(raw: unknown): string {
+  const configured = String(raw || '').trim().replace(/\/+$/, '');
+  if (!configured) return '';
+  return /\/cameras$/i.test(configured) ? configured : `${configured}/cameras`;
+}
 
-  const configuredRoot = String(
+function publicCameraBase(req: AuthRequest): string {
+  // The authenticated admin player belongs to the video-master web application.
+  // Do not let a separately configured SmartYard/RBT integration origin redirect
+  // live and archive requests away from the video master.
+  const applicationBase = cameraGatewayBase(
     process.env.APP_PUBLIC_URL ||
     process.env.APP_PUBLIC_BASE_URL ||
     process.env.PUBLIC_BACKEND_BASE_URL ||
     ''
-  ).trim().replace(/\/+$/, '');
-  if (configuredRoot) return /\/cameras$/i.test(configuredRoot) ? configuredRoot : `${configuredRoot}/cameras`;
+  );
+  if (applicationBase) return applicationBase;
+
+  // Retain SMARTYARD_PUBLIC_BASE_URL as a compatibility fallback for older
+  // installations which do not yet define APP_PUBLIC_URL.
+  const smartYardBase = cameraGatewayBase(process.env.SMARTYARD_PUBLIC_BASE_URL || '');
+  if (smartYardBase) return smartYardBase;
 
   const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim();
   const host = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
