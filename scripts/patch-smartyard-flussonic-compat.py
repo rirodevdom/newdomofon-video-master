@@ -5,6 +5,7 @@ import argparse
 from pathlib import Path
 
 STILL_MARKER = "newdomofon-smartyard-still-preview"
+LIVE_FALLBACK_MARKER = "newdomofon-smartyard-live-snapshot-fallback"
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> tuple[str, bool]:
@@ -89,12 +90,20 @@ def patch_preview_gateway(path: Path) -> bool:
     constants = f"""const PREVIEW_FFMPEG = String(process.env.SMARTYARD_PREVIEW_FFMPEG || process.env.FFMPEG_PATH || '/usr/bin/ffmpeg');
 const STILL_PREVIEW_TIMEOUT_MS = Math.max(3000, Number(process.env.SMARTYARD_STILL_PREVIEW_TIMEOUT_MS || 20000));
 const STILL_PREVIEW_MARKER = '{STILL_MARKER}';
+const LIVE_SNAPSHOT_FALLBACK_MARKER = '{LIVE_FALLBACK_MARKER}';
 """
-    if f"const STILL_PREVIEW_MARKER = '{STILL_MARKER}';" not in text:
-        anchor = "const EXPORT_TIMEOUT_MS = Math.max(5000, Number(process.env.PREVIEW_EXPORT_TIMEOUT_MS || 60000));\n"
-        if anchor not in text:
-            raise RuntimeError("preview constants anchor was not found")
-        text = text.replace(anchor, anchor + constants, 1)
+    if f"const LIVE_SNAPSHOT_FALLBACK_MARKER = '{LIVE_FALLBACK_MARKER}';" not in text:
+        old_constants = f"""const PREVIEW_FFMPEG = String(process.env.SMARTYARD_PREVIEW_FFMPEG || process.env.FFMPEG_PATH || '/usr/bin/ffmpeg');
+const STILL_PREVIEW_TIMEOUT_MS = Math.max(3000, Number(process.env.SMARTYARD_STILL_PREVIEW_TIMEOUT_MS || 20000));
+const STILL_PREVIEW_MARKER = '{STILL_MARKER}';
+"""
+        if old_constants in text:
+            text = text.replace(old_constants, constants, 1)
+        else:
+            anchor = "const EXPORT_TIMEOUT_MS = Math.max(5000, Number(process.env.PREVIEW_EXPORT_TIMEOUT_MS || 60000));\n"
+            if anchor not in text:
+                raise RuntimeError("preview constants anchor was not found")
+            text = text.replace(anchor, anchor + constants, 1)
         changed = True
 
     helper = r'''async function renderStillPreview(sourceFile, outputFile) {
@@ -153,6 +162,80 @@ const STILL_PREVIEW_MARKER = '{STILL_MARKER}';
         text = text.replace(anchor, helper + anchor, 1)
         changed = True
 
+    fallback_helper = r'''async function fetchLiveSnapshotPreview(context, stream, outputFile) {
+  const query = new URLSearchParams({ token: context.upstream_token });
+  const response = await nodeFetch(
+    context,
+    `/cameras/${encodeURIComponent(stream)}/snapshot.jpg?${query.toString()}`,
+    Math.min(EXPORT_TIMEOUT_MS, 20000)
+  );
+  if (!response.ok) {
+    const detail = (await response.text()).slice(0, 1000);
+    throw new Error(`Node live snapshot failed (${response.status}): ${detail}`);
+  }
+
+  const contentLength = Number(response.headers.get('content-length') || 0);
+  if (contentLength > MAX_BYTES) throw new Error('Node live snapshot exceeds size limit');
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (buffer.length < 256 || buffer.length > MAX_BYTES) throw new Error('Node live snapshot has invalid size');
+
+  await fsp.mkdir(CACHE_DIR, { recursive: true });
+  const nonce = `${process.pid}-${Date.now()}`;
+  const source = `${outputFile}.source-${nonce}.jpg`;
+  const tmp = `${outputFile}.tmp-${nonce}.mp4`;
+  await fsp.writeFile(source, buffer, { mode: 0o640 });
+  try {
+    await renderStillPreview(source, tmp);
+    await fsp.rename(tmp, outputFile);
+  } finally {
+    await fsp.unlink(source).catch(() => undefined);
+    await fsp.unlink(tmp).catch(() => undefined);
+  }
+  return fsp.stat(outputFile);
+}
+
+'''
+    if "async function fetchLiveSnapshotPreview(context, stream, outputFile)" not in text:
+        anchor = "async function fetchPreview(context, stream, targetSec, outputFile) {\n"
+        if anchor not in text:
+            raise RuntimeError("live snapshot fallback anchor was not found")
+        text = text.replace(anchor, fallback_helper + anchor, 1)
+        changed = True
+
+    old_fetch_start = """async function fetchPreview(context, stream, targetSec, outputFile) {
+  const range = await loadRange(context, stream, targetSec);
+  const window = previewWindow(range, targetSec);
+"""
+    new_fetch_start = """async function fetchPreview(context, stream, targetSec, outputFile) {
+  const range = await loadRange(context, stream, targetSec);
+  // A newly added camera can have a healthy live stream before its first archive
+  // segment is finalized. SmartYard still expects preview.mp4 immediately.
+  if (!range && targetSec <= 0) {
+    return fetchLiveSnapshotPreview(context, stream, outputFile);
+  }
+  const window = previewWindow(range, targetSec);
+"""
+    text, did = replace_once(text, old_fetch_start, new_fetch_start, "live snapshot fallback start")
+    changed = changed or did
+
+    old_export_error = """  if (!response.ok) {
+    const detail = (await response.text()).slice(0, 1000);
+    throw new Error(`Node preview export failed (${response.status}): ${detail}`);
+  }
+"""
+    new_export_error = """  if (!response.ok) {
+    // The latest archive range can race with segment finalization. For the live
+    // preview only, fall back to a current JPEG instead of surfacing 502.
+    if (targetSec <= 0 && response.status === 404) {
+      return fetchLiveSnapshotPreview(context, stream, outputFile);
+    }
+    const detail = (await response.text()).slice(0, 1000);
+    throw new Error(`Node preview export failed (${response.status}): ${detail}`);
+  }
+"""
+    text, did = replace_once(text, old_export_error, new_export_error, "live snapshot fallback export")
+    changed = changed or did
+
     old_write = """  await fsp.mkdir(CACHE_DIR, { recursive: true });
   const tmp = `${outputFile}.tmp-${process.pid}-${Date.now()}`;
   await fsp.writeFile(tmp, buffer, { mode: 0o640 });
@@ -181,16 +264,28 @@ const STILL_PREVIEW_MARKER = '{STILL_MARKER}';
     old_route = """    'x-newdomofon-smartyard-route': preview.cached ? 'node-preview-cache' : 'node-preview-export'
 """
     new_route = """    'x-newdomofon-smartyard-route': preview.cached ? 'node-preview-still-cache' : 'node-preview-still',
-    'x-newdomofon-preview-mode': STILL_PREVIEW_MARKER
+    'x-newdomofon-preview-mode': `${STILL_PREVIEW_MARKER};${LIVE_SNAPSHOT_FALLBACK_MARKER}`
 """
     text, did = replace_once(text, old_route, new_route, "still preview response marker")
     changed = changed or did
 
+    old_existing_route = """    'x-newdomofon-smartyard-route': preview.cached ? 'node-preview-still-cache' : 'node-preview-still',
+    'x-newdomofon-preview-mode': STILL_PREVIEW_MARKER
+"""
+    if old_existing_route in text:
+        text = text.replace(old_existing_route, new_route, 1)
+        changed = True
+
     required = (
         "async function renderStillPreview(sourceFile, outputFile)",
+        "async function fetchLiveSnapshotPreview(context, stream, outputFile)",
+        "'/snapshot.jpg?'",
+        "if (!range && targetSec <= 0)",
+        "targetSec <= 0 && response.status === 404",
         "'-an'",
         "'-frames:v', '1'",
         f"const STILL_PREVIEW_MARKER = '{STILL_MARKER}';",
+        f"const LIVE_SNAPSHOT_FALLBACK_MARKER = '{LIVE_FALLBACK_MARKER}';",
         "x-newdomofon-preview-mode",
     )
     for marker in required:
