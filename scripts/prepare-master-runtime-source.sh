@@ -26,6 +26,7 @@ patchers=(
   scripts/patch-system-managed-token-ui.py
   scripts/patch-managed-media-gateway.py
   scripts/patch-smartyard-flussonic-compat.py
+  scripts/patch-smartyard-preview-live-fallback.py
 )
 
 for relative in "${patchers[@]}"; do
@@ -39,7 +40,8 @@ python3 -m py_compile \
   "$PROJECT_DIR/scripts/patch-auto-token-detach-guard.py" \
   "$PROJECT_DIR/scripts/patch-system-managed-token-ui.py" \
   "$PROJECT_DIR/scripts/patch-managed-media-gateway.py" \
-  "$PROJECT_DIR/scripts/patch-smartyard-flussonic-compat.py"
+  "$PROJECT_DIR/scripts/patch-smartyard-flussonic-compat.py" \
+  "$PROJECT_DIR/scripts/patch-smartyard-preview-live-fallback.py"
 
 python3 "$PROJECT_DIR/scripts/patch-root-only-master-runtime.py" --project-dir "$PROJECT_DIR"
 
@@ -80,6 +82,10 @@ grep -q "const livePlaylist = /^(?:live|index|video)" \
 grep -q "oldestAllowedMs" \
   "$PROJECT_DIR/smartyard-compat-proxy/server-node-aware.js"
 grep -q "newdomofon-smartyard-still-preview" \
+  "$PROJECT_DIR/smartyard-compat-proxy/server-preview-gateway.js"
+grep -q "newdomofon-smartyard-live-snapshot-fallback" \
+  "$PROJECT_DIR/smartyard-compat-proxy/server-preview-gateway.js"
+grep -q "fetchLiveSnapshotPreview" \
   "$PROJECT_DIR/smartyard-compat-proxy/server-preview-gateway.js"
 grep -q "'-frames:v', '1'" \
   "$PROJECT_DIR/smartyard-compat-proxy/server-preview-gateway.js"
