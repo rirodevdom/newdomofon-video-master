@@ -19,13 +19,20 @@ jobs:
           fetch-depth: 0
       - name: Apply implementation
         run: |
-          # All patch parts are now committed on the same branch head.
           if ! compgen -G '.github/patch-parts/*' >/dev/null; then
             echo 'No staged patch parts; nothing to apply.'
             exit 0
           fi
 
-          cat .github/patch-parts/* | tr -d '\n\r' | base64 -d | gzip -dc > /tmp/agent.patch
+          for file in .github/patch-parts/*; do
+            printf '%s ' "$file"
+            tr -cd 'A-Za-z0-9+/=' < "$file" | sha256sum
+          done
+
+          cat .github/patch-parts/* | tr -cd 'A-Za-z0-9+/=' > /tmp/agent.patch.gz.b64
+          wc -c /tmp/agent.patch.gz.b64
+          echo '80c9e29b7b1473cb08daed5c0cc37dc1eab2ed051049b9bb526cadded4500b3e  /tmp/agent.patch.gz.b64' | sha256sum -c -
+          base64 -d /tmp/agent.patch.gz.b64 | gzip -dc > /tmp/agent.patch
           git apply --index /tmp/agent.patch
           git rm -r .github/patch-parts
           git rm -f .github/agent.patch.gz.b64 || true
