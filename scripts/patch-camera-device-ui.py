@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
 
 
@@ -111,12 +112,21 @@ def patch_devices_view(path: Path) -> None:
         "device comment table cell",
     )
 
-    text = replace_once(
+    # Historical views had seven columns; the vendor-neutral view has six before
+    # the comment column is added. Increase whichever empty-state colspan exists.
+    if 'class="device-comment-cell"' in text and not re.search(
+        r'<td colspan="(?:7|8)" class="text-center text-medium-emphasis py-6">Устройства не найдены</td>',
         text,
-        '<td colspan="7" class="text-center text-medium-emphasis py-6">Устройства не найдены</td>',
-        '<td colspan="8" class="text-center text-medium-emphasis py-6">Устройства не найдены</td>',
-        "device table empty-state colspan",
-    )
+    ):
+        updated, count = re.subn(
+            r'<td colspan="(\d+)" class="text-center text-medium-emphasis py-6">Устройства не найдены</td>',
+            lambda match: f'<td colspan="{int(match.group(1)) + 1}" class="text-center text-medium-emphasis py-6">Устройства не найдены</td>',
+            text,
+            count=1,
+        )
+        if count != 1:
+            raise RuntimeError("device table empty-state colspan: source fragment not found")
+        text = updated
 
     text = replace_once(
         text,
@@ -130,11 +140,15 @@ def patch_devices_view(path: Path) -> None:
         'class="device-comment-cell"',
         "device.comment || '—'",
         "[device.name, device.comment, device.connection_type",
-        'colspan="8"',
     )
     missing = [marker for marker in required if marker not in text]
     if missing:
         raise RuntimeError(f"device comment markers missing: {missing}")
+    if not re.search(
+        r'<td colspan="(?:7|8)" class="text-center text-medium-emphasis py-6">Устройства не найдены</td>',
+        text,
+    ):
+        raise RuntimeError("device empty-state colspan was not adjusted")
 
     path.write_text(text, encoding="utf-8")
 
@@ -144,7 +158,7 @@ def main() -> None:
     parser.add_argument("--project-dir", default="/opt/newdomofon-video-master")
     args = parser.parse_args()
 
-    root = Path(args.project_dir).resolve()
+    root = Path(args.project_dir)
     player_view = root / "frontend/src/views/PlayerView.vue"
     devices_view = root / "frontend/src/views/DevicesView.vue"
 
