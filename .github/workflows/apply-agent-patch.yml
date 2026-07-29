@@ -19,6 +19,7 @@ jobs:
           fetch-depth: 0
       - name: Apply implementation
         run: |
+          # All patch parts are now committed on the same branch head.
           if ! compgen -G '.github/patch-parts/*' >/dev/null; then
             echo 'No staged patch parts; nothing to apply.'
             exit 0
