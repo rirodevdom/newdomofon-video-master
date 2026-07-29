@@ -22,7 +22,8 @@ jobs:
           files=(
             .github/patch-parts/00
             .github/patch-parts/01
-            .github/patch-parts/02a
+            .github/patch-parts/02a0
+            .github/patch-parts/02a1
             .github/patch-parts/02b
             .github/patch-parts/03
             .github/patch-parts/04
