@@ -2,7 +2,7 @@ name: Hikvision node contract
 
 on:
   push:
-    branches: [main, 'agent/hikvision-node-integration', 'agent/hikvision-master-media-proxy']
+    branches: [main, 'agent/**']
   pull_request:
 
 jobs:
@@ -25,6 +25,9 @@ jobs:
           grep -q "hikvisionMediaProxyRouter" backend/src/routes/hikvisionPlayer.ts
           grep -q "/api/hikvision-media" backend/src/routes/hikvisionPlayer.ts
           grep -q "master-https-proxy" backend/src/routes/hikvisionPlayer.ts
+          grep -q "agent_token_hash AS node_agent_token_hash" backend/src/routes/hikvisionPlayer.ts
+          grep -q "upstream_media_auth: 'agent-token-hash'" backend/src/routes/hikvisionPlayer.ts
+          grep -q "ARCHIVE_RANGE_CHUNK_MS" backend/src/routes/hikvisionPlayer.ts
           ! grep -q "directMediaUrl" backend/src/routes/hikvisionPlayer.ts
           ! grep -q "absoluteNodeUrl" backend/src/routes/hikvisionPlayer.ts
           ! grep -RIn "fetch(.*ISAPI\|/ISAPI/" backend/src --include='*.ts'

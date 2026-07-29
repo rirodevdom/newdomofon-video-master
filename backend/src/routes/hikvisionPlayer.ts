@@ -16,6 +16,9 @@ const rangeSchema = z.object({
   end: z.string().datetime()
 });
 
+const ARCHIVE_RANGE_CHUNK_MS = 24 * 60 * 60 * 1000;
+const ARCHIVE_RANGE_MERGE_GAP_MS = 2000;
+
 type MediaScope = 'live' | 'archive' | 'snapshot';
 
 type HikvisionChannelRow = {
@@ -37,6 +40,7 @@ type HikvisionChannelRow = {
   node_public_base_url: string | null;
   node_internal_url: string | null;
   node_media_secret: string;
+  node_agent_token_hash: string;
   node_status: string;
   node_enabled: boolean;
 };
@@ -46,6 +50,13 @@ type MediaTokenPayload = {
   scopes: MediaScope[];
   iat: number;
   exp: number;
+};
+
+type ArchiveRangeItem = {
+  start: string;
+  end: string;
+  source?: string;
+  [key: string]: unknown;
 };
 
 function normalizeNodeBaseUrl(raw: string | null | undefined): string | null {
@@ -71,9 +82,9 @@ function nodeBaseCandidates(channel: HikvisionChannelRow): string[] {
     if (value && !values.includes(value)) values.push(value);
   };
 
-  // A loopback internal_url is valid only on the node itself, not on master.
-  // Prefer a routable internal URL, then public URL, and keep loopback last as
-  // a compatibility fallback for single-host installations.
+  // Prefer a routable internal URL, then public URL. A stale internal address
+  // may point to an ordinary video-node service, so every HTTP status that can
+  // represent the wrong service is retried against the next candidate.
   if (internal && !isLoopbackUrl(internal)) add(internal);
   add(publicUrl);
   add(internal);
@@ -121,6 +132,12 @@ function verifyMediaToken(secret: string, channelId: string, scope: MediaScope, 
   return payload;
 }
 
+function upstreamMediaSecret(channel: HikvisionChannelRow): string {
+  const agentHash = String(channel.node_agent_token_hash || '').trim();
+  if (/^[a-f0-9]{64}$/i.test(agentHash)) return agentHash;
+  return String(channel.node_media_secret || '').trim();
+}
+
 async function loadChannel(channelId: string): Promise<HikvisionChannelRow | null> {
   const result = await query<HikvisionChannelRow>(
     `SELECT h.channel_external_id, h.device_id, h.dvr_server_id, h.physical_channel,
@@ -130,8 +147,9 @@ async function loadChannel(channelId: string): Promise<HikvisionChannelRow | nul
             n.name AS node_name,
             COALESCE(n.public_base_url, n.base_url) AS node_public_base_url,
             n.internal_url AS node_internal_url,
-            n.media_secret AS node_media_secret, n.status AS node_status,
-            n.is_enabled AS node_enabled
+            n.media_secret AS node_media_secret,
+            n.agent_token_hash AS node_agent_token_hash,
+            n.status AS node_status, n.is_enabled AS node_enabled
        FROM hikvision_node_channels h
        JOIN devices d ON d.id = h.device_id
        JOIN dvr_servers n ON n.id = h.dvr_server_id
@@ -147,6 +165,7 @@ function requirePlayable(channel: HikvisionChannelRow): void {
   if (!channel.node_enabled) throw Object.assign(new Error('Hikvision node is disabled'), { statusCode: 409 });
   if (!channel.enabled) throw Object.assign(new Error('Hikvision channel is disabled'), { statusCode: 409 });
   if (!channel.node_media_secret) throw Object.assign(new Error('Hikvision node media secret is not configured'), { statusCode: 409 });
+  if (!upstreamMediaSecret(channel)) throw Object.assign(new Error('Hikvision upstream media credential is not configured'), { statusCode: 409 });
 }
 
 function upstreamUrl(
@@ -166,8 +185,7 @@ async function fetchNodeMedia(
   suffix: string,
   init: RequestInit = {},
   params: Record<string, string> = {},
-  timeoutMs = 60_000,
-  token = signMediaToken(channel.node_media_secret, channel.channel_external_id, [scope])
+  timeoutMs = 60_000
 ): Promise<globalThis.Response> {
   requirePlayable(channel);
   const candidates = nodeBaseCandidates(channel);
@@ -175,38 +193,52 @@ async function fetchNodeMedia(
     throw Object.assign(new Error('Hikvision node URL is not configured'), { statusCode: 409 });
   }
 
+  // Browser tokens are validated only by master. Upstream requests receive a
+  // separate token signed with SHA-256(DVR_NODE_TOKEN), which master already
+  // stores as agent_token_hash and the node can derive from its raw token.
+  const upstreamToken = signMediaToken(upstreamMediaSecret(channel), channel.channel_external_id, [scope]);
   let lastError: unknown = null;
+  const attempts: string[] = [];
+
   for (let index = 0; index < candidates.length; index += 1) {
     const base = candidates[index]!;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(
-        upstreamUrl(base, channel.channel_external_id, suffix, token, params),
+        upstreamUrl(base, channel.channel_external_id, suffix, upstreamToken, params),
         { ...init, signal: controller.signal }
       );
       if (response.ok) return response;
 
       const text = await response.text().catch(() => '');
+      attempts.push(`${base} -> HTTP ${response.status}`);
       const error = Object.assign(
         new Error(text || `Hikvision node HTTP ${response.status}`),
-        { statusCode: response.status }
+        { statusCode: response.status, upstreamAttempts: attempts }
       );
       lastError = error;
 
-      // A stale/loopback internal URL can point to another local service and
-      // return 404. Try the next configured node URL before surfacing it.
-      const retryableStatus = [404, 408, 425, 429, 500, 502, 503, 504].includes(response.status);
+      // 401/403 can be returned by a stale internal URL that points to the
+      // ordinary video-node service. Try the configured public Hikvision URL
+      // before deciding that the credential itself is invalid.
+      const retryableStatus = [401, 403, 404, 408, 425, 429, 500, 502, 503, 504].includes(response.status);
       if (!retryableStatus || index === candidates.length - 1) throw error;
     } catch (error) {
       lastError = error;
-      if (index === candidates.length - 1) throw error;
+      if (!attempts.some((item) => item.startsWith(`${base} ->`))) {
+        attempts.push(`${base} -> ${error instanceof Error ? error.message : String(error)}`);
+      }
+      if (index === candidates.length - 1) {
+        if (error && typeof error === 'object') (error as any).upstreamAttempts = attempts;
+        throw error;
+      }
     } finally {
       clearTimeout(timer);
     }
   }
 
-  throw lastError || Object.assign(new Error('Hikvision node is unavailable'), { statusCode: 502 });
+  throw lastError || Object.assign(new Error('Hikvision node is unavailable'), { statusCode: 502, upstreamAttempts: attempts });
 }
 
 async function nodeJson(
@@ -215,13 +247,12 @@ async function nodeJson(
   suffix: string,
   init: RequestInit = {},
   params: Record<string, string> = {},
-  timeoutMs = 60_000,
-  token?: string
+  timeoutMs = 60_000
 ): Promise<any> {
   const response = await fetchNodeMedia(channel, scope, suffix, {
     ...init,
     headers: { accept: 'application/json', 'content-type': 'application/json', ...(init.headers || {}) }
-  }, params, timeoutMs, token);
+  }, params, timeoutMs);
   const text = await response.text();
   try {
     return text ? JSON.parse(text) : {};
@@ -256,6 +287,7 @@ function copyProxyHeaders(response: globalThis.Response, res: ExpressResponse): 
     if (value) res.setHeader(header, value);
   }
   res.setHeader('x-newdomofon-hikvision-media-proxy', 'master');
+  res.setHeader('x-newdomofon-hikvision-upstream-auth', 'agent-token-hash');
 }
 
 function streamProxyResponse(response: globalThis.Response, res: ExpressResponse): void {
@@ -271,6 +303,93 @@ function streamProxyResponse(response: globalThis.Response, res: ExpressResponse
   });
   res.once('close', () => stream.destroy());
   stream.pipe(res);
+}
+
+function errorStatus(error: unknown): number {
+  if (!error || typeof error !== 'object') return 0;
+  const value = Number((error as { statusCode?: unknown }).statusCode);
+  return Number.isInteger(value) ? value : 0;
+}
+
+function archiveChunks(start: Date, end: Date): Array<{ start: Date; end: Date }> {
+  const chunks: Array<{ start: Date; end: Date }> = [];
+  for (let cursor = start.getTime(); cursor < end.getTime(); cursor += ARCHIVE_RANGE_CHUNK_MS) {
+    chunks.push({
+      start: new Date(cursor),
+      end: new Date(Math.min(end.getTime(), cursor + ARCHIVE_RANGE_CHUNK_MS))
+    });
+  }
+  return chunks;
+}
+
+function mergeArchiveRanges(items: ArchiveRangeItem[]): ArchiveRangeItem[] {
+  const normalized = items.map((item) => {
+    const startMs = new Date(item.start).getTime();
+    const endMs = new Date(item.end).getTime();
+    return { item, startMs, endMs };
+  }).filter((entry) => Number.isFinite(entry.startMs) && Number.isFinite(entry.endMs) && entry.endMs > entry.startMs)
+    .sort((a, b) => a.startMs - b.startMs);
+
+  const merged: Array<{ startMs: number; endMs: number; source?: string }> = [];
+  for (const entry of normalized) {
+    const source = String(entry.item.source || '');
+    const current = merged[merged.length - 1];
+    if (current && String(current.source || '') === source && entry.startMs <= current.endMs + ARCHIVE_RANGE_MERGE_GAP_MS) {
+      current.endMs = Math.max(current.endMs, entry.endMs);
+    } else {
+      merged.push({ startMs: entry.startMs, endMs: entry.endMs, source });
+    }
+  }
+
+  return merged.map((item) => ({
+    start: new Date(item.startMs).toISOString(),
+    end: new Date(item.endMs).toISOString(),
+    source: item.source || undefined
+  }));
+}
+
+async function loadArchiveRangesChunked(
+  channel: HikvisionChannelRow,
+  start: Date,
+  end: Date
+): Promise<{ items: ArchiveRangeItem[]; chunksAttempted: number; chunksSucceeded: number; chunksNotFound: number }> {
+  const chunks = archiveChunks(start, end);
+  const items: ArchiveRangeItem[] = [];
+  let chunksSucceeded = 0;
+  let chunksNotFound = 0;
+  let lastNotFound: unknown = null;
+
+  for (const chunk of chunks) {
+    try {
+      const payload = await nodeJson(channel, 'archive', 'archive/ranges', {}, {
+        start: chunk.start.toISOString(),
+        end: chunk.end.toISOString()
+      });
+      chunksSucceeded += 1;
+      items.push(...((payload.ranges || payload.items || []) as ArchiveRangeItem[]));
+    } catch (error) {
+      if (errorStatus(error) === 404) {
+        chunksNotFound += 1;
+        lastNotFound = error;
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  if (!chunksSucceeded && lastNotFound) {
+    throw Object.assign(
+      new Error('Hikvision archive ranges endpoint was not found on every configured node URL'),
+      { statusCode: 502, cause: lastNotFound }
+    );
+  }
+
+  return {
+    items: mergeArchiveRanges(items),
+    chunksAttempted: chunks.length,
+    chunksSucceeded,
+    chunksNotFound
+  };
 }
 
 // Token-authenticated same-origin media gateway. The browser never receives
@@ -289,9 +408,9 @@ hikvisionMediaProxyRouter.get(/^\/channels\/([^/]+)\/(.+)$/, asyncHandler(async 
   const channel = await loadChannel(channelId);
   if (!channel) return res.status(404).json({ error: 'Hikvision channel not found' });
 
-  const token = String(req.query.token || '').trim();
-  if (!token) return res.status(401).json({ error: 'Missing Hikvision media token' });
-  verifyMediaToken(channel.node_media_secret, channel.channel_external_id, scope, token);
+  const browserToken = String(req.query.token || '').trim();
+  if (!browserToken) return res.status(401).json({ error: 'Missing Hikvision media token' });
+  verifyMediaToken(channel.node_media_secret, channel.channel_external_id, scope, browserToken);
 
   const params: Record<string, string> = {};
   for (const [key, raw] of Object.entries(req.query)) {
@@ -311,8 +430,7 @@ hikvisionMediaProxyRouter.get(/^\/channels\/([^/]+)\/(.+)$/, asyncHandler(async 
     suffix,
     { method: 'GET', headers },
     params,
-    suffix.endsWith('.mp4') ? 10 * 60_000 : 90_000,
-    token
+    suffix.endsWith('.mp4') ? 10 * 60_000 : 90_000
   );
   streamProxyResponse(upstream, res);
 }));
@@ -358,14 +476,24 @@ hikvisionPlayerRouter.get('/:channelId/archive/ranges', asyncHandler(async (req,
   const params = rangeSchema.parse(req.query);
   const channel = await loadChannel(decodeURIComponent(req.params.channelId));
   if (!channel) return res.status(404).json({ error: 'Hikvision channel not found' });
-  const payload = await nodeJson(channel, 'archive', 'archive/ranges', {}, { start: params.start, end: params.end });
+  const start = new Date(params.start);
+  const end = new Date(params.end);
+  if (end <= start) return res.status(400).json({ error: 'end must be after start' });
+
+  const result = await loadArchiveRangesChunked(channel, start, end);
   res.setHeader('cache-control', 'no-store');
   res.json({
-    items: payload.ranges || payload.items || [],
-    source: payload.source || channel.archive_storage,
+    items: result.items,
+    source: channel.archive_storage,
     requested_source: channel.archive_storage,
     archive_storage: channel.archive_storage,
-    available_sources: [channel.archive_storage]
+    available_sources: [channel.archive_storage],
+    range_query: {
+      chunk_seconds: ARCHIVE_RANGE_CHUNK_MS / 1000,
+      chunks_attempted: result.chunksAttempted,
+      chunks_succeeded: result.chunksSucceeded,
+      chunks_not_found: result.chunksNotFound
+    }
   });
 }));
 
@@ -374,22 +502,21 @@ async function archiveResponse(req: any, res: any) {
   const channel = await loadChannel(decodeURIComponent(req.params.channelId));
   if (!channel) return res.status(404).json({ error: 'Hikvision channel not found' });
   requirePlayable(channel);
-  const token = signMediaToken(channel.node_media_secret, channel.channel_external_id, ['archive']);
+  const browserToken = signMediaToken(channel.node_media_secret, channel.channel_external_id, ['archive']);
   const session = await nodeJson(
     channel,
     'archive',
     'archive/session',
     { method: 'POST', body: JSON.stringify({ start: params.start, end: params.end }) },
     {},
-    90_000,
-    token
+    90_000
   );
   const sessionId = String(session.id || '').trim();
   if (!sessionId) throw Object.assign(new Error('Hikvision node did not return archive session id'), { statusCode: 502 });
   const url = proxyMediaUrl(
     channel.channel_external_id,
     `archive/sessions/${encodeURIComponent(sessionId)}/index.m3u8`,
-    token
+    browserToken
   );
   return res.json({
     archiveHls: url,
@@ -439,6 +566,7 @@ hikvisionPlayerRouter.get('/:channelId/status', asyncHandler(async (req, res) =>
     archive_storage: channel.archive_storage,
     available_archive_sources: [channel.archive_storage],
     default_archive_source: channel.archive_storage,
-    media_transport: 'master-https-proxy'
+    media_transport: 'master-https-proxy',
+    upstream_media_auth: 'agent-token-hash'
   });
 }));
