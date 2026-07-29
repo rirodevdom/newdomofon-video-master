@@ -28,9 +28,21 @@ jobs:
           grep -q "agent_token_hash AS node_agent_token_hash" backend/src/routes/hikvisionPlayer.ts
           grep -q "upstream_media_auth: 'agent-token-hash'" backend/src/routes/hikvisionPlayer.ts
           grep -q "ARCHIVE_RANGE_CHUNK_MS" backend/src/routes/hikvisionPlayer.ts
+          grep -Eq 'location[[:space:]]+\^~[[:space:]]+/api/' deploy/nginx/newdomofon-video.conf
+          grep -q 'timeout: 120_000' frontend/src/api.ts
           ! grep -q "directMediaUrl" backend/src/routes/hikvisionPlayer.ts
           ! grep -q "absoluteNodeUrl" backend/src/routes/hikvisionPlayer.ts
           ! grep -RIn "fetch(.*ISAPI\|/ISAPI/" backend/src --include='*.ts'
+      - name: Validate preserved Nginx normalization
+        run: |
+          tmp="$(mktemp)"
+          cp deploy/nginx/newdomofon-video.conf "$tmp"
+          python3 scripts/normalize-smartyard-media-cors.py "$tmp"
+          grep -Eq 'location[[:space:]]+\^~[[:space:]]+/api/' "$tmp"
+          before="$(sha256sum "$tmp" | awk '{print $1}')"
+          python3 scripts/normalize-smartyard-media-cors.py "$tmp"
+          after="$(sha256sum "$tmp" | awk '{print $1}')"
+          test "$before" = "$after"
       - name: Build backend
         working-directory: backend
         run: |
