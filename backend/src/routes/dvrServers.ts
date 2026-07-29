@@ -25,6 +25,7 @@ const schema = z.object({
 }).strict();
 
 const createSchema = schema.extend({
+  node_kind: z.enum(['video', 'hikvision']).default('video'),
   master_url: z.string().url(),
   node_id: z.string().uuid(),
   agent_token: safeSecret,
@@ -46,12 +47,16 @@ dvrServersRouter.get('/', asyncHandler(async (_req, res) => {
   const result = await query(
     `SELECT id, name, base_url, public_base_url, internal_url, status, last_seen_at,
             version, capabilities, storage, is_enabled, config_generation,
+            CASE WHEN capabilities->>'node_kind' = 'hikvision' THEN 'hikvision' ELSE 'video' END AS node_kind,
             created_at, updated_at,
             EXISTS(SELECT 1 FROM devices d WHERE d.dvr_server_id = dvr_servers.id) AS has_cameras,
-            (SELECT count(*)::int
-               FROM cameras c
-               JOIN devices d ON d.id = c.device_id
-              WHERE d.dvr_server_id = dvr_servers.id) AS camera_count,
+            ((SELECT count(*)
+                FROM cameras c
+                JOIN devices d ON d.id = c.device_id
+               WHERE d.dvr_server_id = dvr_servers.id) +
+             (SELECT count(*)
+                FROM hikvision_node_channels h
+               WHERE h.dvr_server_id = dvr_servers.id))::int AS camera_count,
             (SELECT count(*)::int FROM devices d WHERE d.dvr_server_id = dvr_servers.id) AS device_count
        FROM dvr_servers
       ORDER BY created_at DESC`
@@ -75,6 +80,7 @@ dvrServersRouter.post('/', requireRole('super_admin', 'operator'), asyncHandler(
   const publicBaseUrl = body.public_base_url;
   const capabilities = {
     ...(body.capabilities || {}),
+    node_kind: body.node_kind,
     manual_registration: {
       master_url: body.master_url,
       credential_source: 'operator_supplied'
@@ -101,13 +107,15 @@ dvrServersRouter.post('/', requireRole('super_admin', 'operator'), asyncHandler(
   );
   await audit(req, 'dvr_server.create', 'dvr_server', result.rows[0].id, {
     credential_source: 'operator_supplied',
+    node_kind: body.node_kind,
     master_url: body.master_url
   });
   res.status(201).json({
     id: result.rows[0].id,
     node_id: result.rows[0].id,
     master_url: body.master_url,
-    credential_source: 'operator_supplied'
+    credential_source: 'operator_supplied',
+    node_kind: body.node_kind
   });
 }));
 

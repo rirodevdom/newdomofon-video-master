@@ -21,6 +21,7 @@
         <thead>
           <tr>
             <th>Название</th>
+            <th>Тип</th>
             <th>Статус</th>
             <th>Public URL</th>
             <th>Internal URL</th>
@@ -35,6 +36,7 @@
         <tbody>
           <tr v-for="node in filteredNodes" :key="node.id">
             <td>{{ node.name }}</td>
+            <td><v-chip size="small" variant="tonal">{{ nodeKindLabel(node) }}</v-chip></td>
             <td><v-chip size="small" :color="nodeStatusColor(node)">{{ nodeHealth(node) }}</v-chip></td>
             <td class="text-truncate" style="max-width: 220px">{{ node.public_base_url || node.base_url || '—' }}</td>
             <td class="text-truncate" style="max-width: 220px">{{ node.internal_url || '—' }}</td>
@@ -71,7 +73,7 @@
             </td>
           </tr>
           <tr v-if="!filteredNodes.length">
-            <td colspan="10" class="text-center text-medium-emphasis py-6">Node не найдены</td>
+            <td colspan="11" class="text-center text-medium-emphasis py-6">Node не найдены</td>
           </tr>
         </tbody>
       </v-table>
@@ -79,21 +81,23 @@
 
     <v-dialog v-model="dialog" max-width="900">
       <v-card>
-        <v-card-title>Добавление заранее развёрнутой video node</v-card-title>
+        <v-card-title>Добавление заранее развёрнутой node</v-card-title>
         <v-card-text>
           <v-alert type="warning" variant="tonal" class="mb-4">
-            Скопируйте значения из <code>/root/newdomofon-node-master-registration.env</code> на node.
-            Значения должны полностью совпадать с её <code>/etc/newdomofon-video/app.env</code>.
+            Для обычной node скопируйте значения из <code>/root/newdomofon-node-master-registration.env</code>.
+            Для Hikvision-node — из <code>/root/newdomofon-hik-master-registration.env</code>.
+            Значения должны полностью совпадать с runtime env node.
           </v-alert>
           <v-row>
-            <v-col cols="12" md="6"><v-text-field v-model="form.name" label="Название node" /></v-col>
-            <v-col cols="12" md="6"><v-switch v-model="form.is_enabled" color="primary" label="Активна" /></v-col>
+            <v-col cols="12" md="4"><v-text-field v-model="form.name" label="Название node" /></v-col>
+            <v-col cols="12" md="4"><v-select v-model="form.node_kind" :items="nodeKinds" item-title="title" item-value="value" label="Тип node" /></v-col>
+            <v-col cols="12" md="4"><v-switch v-model="form.is_enabled" color="primary" label="Активна" /></v-col>
             <v-col cols="12"><v-text-field v-model="form.master_url" label="DVR_MASTER_URL" placeholder="https://video.example.com" /></v-col>
             <v-col cols="12"><v-text-field v-model="form.node_id" label="DVR_NODE_ID" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autocomplete="off" /></v-col>
             <v-col cols="12"><v-text-field v-model="form.agent_token" label="DVR_NODE_TOKEN" type="password" autocomplete="new-password" /></v-col>
             <v-col cols="12"><v-text-field v-model="form.media_secret" label="DVR_NODE_MEDIA_SECRET" type="password" autocomplete="new-password" /></v-col>
-            <v-col cols="12" md="6"><v-text-field v-model="form.public_base_url" label="DVR_NODE_PUBLIC_BASE_URL" placeholder="http://192.0.2.20" /></v-col>
-            <v-col cols="12" md="6"><v-text-field v-model="form.internal_url" label="DVR_NODE_INTERNAL_URL" placeholder="http://192.0.2.20:3010" /></v-col>
+            <v-col cols="12" md="6"><v-text-field v-model="form.public_base_url" label="DVR_NODE_PUBLIC_BASE_URL" :placeholder="form.node_kind === 'hikvision' ? 'http://192.0.2.20:3020' : 'http://192.0.2.20'" /></v-col>
+            <v-col cols="12" md="6"><v-text-field v-model="form.internal_url" label="DVR_NODE_INTERNAL_URL" :placeholder="form.node_kind === 'hikvision' ? 'http://192.0.2.20:3020' : 'http://192.0.2.20:3010'" /></v-col>
           </v-row>
         </v-card-text>
         <v-card-actions>
@@ -136,6 +140,10 @@ const nodes = ref<any[]>([]);
 const search = ref('');
 const statusFilter = ref('all');
 const statusFilters = ['all', 'online', 'warning', 'offline'];
+const nodeKinds = [
+  { title: 'Обычная video node', value: 'video' },
+  { title: 'Hikvision node', value: 'hikvision' }
+];
 const message = ref('');
 const messageType = ref<'success' | 'error'>('success');
 const dialog = ref(false);
@@ -147,6 +155,7 @@ const rotationTarget = ref<any | null>(null);
 function blankCreateForm() {
   return {
     name: 'Node 1',
+    node_kind: 'video',
     master_url: window.location.origin,
     node_id: '',
     agent_token: '',
@@ -181,7 +190,7 @@ const filteredNodes = computed(() => {
   return nodes.value.filter((node) => {
     const health = nodeHealth(node);
     const statusOk = statusFilter.value === 'all' || health === statusFilter.value;
-    const textOk = !needle || [node.name, node.public_base_url, node.base_url, node.internal_url, health].some((value) => String(value || '').toLowerCase().includes(needle));
+    const textOk = !needle || [node.name, node.node_kind, node.public_base_url, node.base_url, node.internal_url, health].some((value) => String(value || '').toLowerCase().includes(needle));
     return statusOk && textOk;
   });
 });
@@ -195,6 +204,13 @@ function ageSeconds(value: string | null) {
   if (!value) return null;
   const age = Math.floor((Date.now() - new Date(value).getTime()) / 1000);
   return Number.isFinite(age) ? age : null;
+}
+
+
+function nodeKindLabel(node: any) {
+  return node.node_kind === 'hikvision' || node.capabilities?.node_kind === 'hikvision'
+    ? 'Hikvision'
+    : 'Video';
 }
 
 function nodeHealth(node: any) {
@@ -281,6 +297,7 @@ async function createNode() {
   try {
     await api.post('/dvr-servers', {
       ...form,
+      node_kind: form.node_kind,
       name: form.name.trim(),
       master_url: form.master_url.trim(),
       node_id: form.node_id.trim(),
@@ -290,7 +307,7 @@ async function createNode() {
       internal_url: form.internal_url.trim()
     });
     dialog.value = false;
-    notify('Node создана с credentials, заданными при её развёртывании');
+    notify(`${form.node_kind === 'hikvision' ? 'Hikvision' : 'Video'} node создана с credentials, заданными при её развёртывании`);
     Object.assign(form, blankCreateForm());
     await load();
   } catch (err: any) {

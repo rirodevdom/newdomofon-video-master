@@ -1,0 +1,35 @@
+name: Hikvision node contract
+
+on:
+  push:
+    branches: [main, 'agent/hikvision-node-integration']
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validate contract files
+        run: |
+          test -s backend/migrations/094_hikvision_node_contract.sql
+          test -s docs/HIKVISION_NODE_REGISTRATION.md
+          grep -q "HIKVISION" backend/src/routes/devices.ts
+          grep -q "hikvision/sync" backend/src/routes/nodeAgent.ts
+          grep -q "node_kind" backend/src/routes/dvrServers.ts
+          grep -q "Hikvision node" frontend/src/views/NodesView.vue
+          grep -q "Каналы синхронизируются автоматически" frontend/src/views/DevicesView.vue
+          ! grep -RIn "fetch(.*ISAPI\|/ISAPI/" backend/src --include='*.ts'
+      - name: Build backend
+        working-directory: backend
+        run: |
+          npm ci
+          npm run build
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build

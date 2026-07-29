@@ -8,8 +8,8 @@
     </div>
 
     <v-alert type="info" variant="tonal" class="mb-4">
-      Обычная video node работает с RTSP и ONVIF. Live и архив всегда записываются на назначенную video node.
-      Vendor-specific Hikvision/ISAPI функции вынесены из этого проекта.
+      RTSP/ONVIF-устройства назначаются обычной video node. Hikvision-устройства назначаются только
+      специализированной Hikvision-node, которая автоматически получает каналы, настройки live и архив через ISAPI.
     </v-alert>
 
     <v-alert v-if="message" :type="messageType" variant="tonal" class="mb-4" closable @click:close="message = ''">
@@ -63,19 +63,31 @@
             <v-col cols="12" md="6"><v-text-field v-model="form.name" label="Название устройства" /></v-col>
             <v-col cols="12" md="3"><v-select v-model="form.connection_type" :items="connectionTypes" label="Тип подключения" /></v-col>
             <v-col cols="12" md="3"><v-switch v-model="form.is_enabled" color="primary" label="Устройство включено" /></v-col>
-            <v-col cols="12" md="6"><v-select v-model="form.dvr_server_id" :items="nodes" item-title="name" item-value="id" label="Video node" clearable /></v-col>
+            <v-col cols="12" md="6"><v-select v-model="form.dvr_server_id" :items="compatibleNodes" item-title="name" item-value="id" :label="form.connection_type === 'HIKVISION' ? 'Hikvision node' : 'Video node'" clearable /></v-col>
             <v-col cols="12" md="6">
-              <v-text-field model-value="Локальный архив video node" label="Хранение архива" readonly />
+              <v-select
+                v-if="form.connection_type === 'HIKVISION'"
+                v-model="form.archive_storage"
+                :items="archiveStorageOptions"
+                item-title="title"
+                item-value="value"
+                label="Хранение архива"
+              />
+              <v-text-field v-else model-value="Локальный архив video node" label="Хранение архива" readonly />
             </v-col>
             <v-col cols="12">
               <v-alert type="info" variant="tonal" density="compact">
                 Назначенная node автоматически применяется ко всем камерам устройства.
               </v-alert>
             </v-col>
-            <v-col cols="12" md="6"><v-text-field v-model="form.host" label="Host/IP" /></v-col>
-            <v-col cols="12" md="2"><v-text-field v-model.number="form.port" label="Port" type="number" /></v-col>
+            <v-col v-if="form.connection_type === 'HIKVISION'" cols="12" md="3"><v-select v-model="form.isapi_scheme" :items="['http', 'https']" label="ISAPI protocol" /></v-col>
+            <v-col cols="12" :md="form.connection_type === 'HIKVISION' ? 5 : 6"><v-text-field v-model="form.host" label="Host/IP" /></v-col>
+            <v-col cols="12" :md="form.connection_type === 'HIKVISION' ? 2 : 2"><v-text-field v-model.number="form.port" :label="form.connection_type === 'HIKVISION' ? 'ISAPI port' : 'Port'" type="number" /></v-col>
+            <v-col v-if="form.connection_type === 'HIKVISION'" cols="12" md="2"><v-text-field v-model.number="form.rtsp_port" label="RTSP port" type="number" /></v-col>
             <v-col cols="12" md="4"><v-text-field v-model="form.username" label="Login" autocomplete="off" /></v-col>
             <v-col cols="12" md="6"><v-text-field v-model="form.password" label="Password" type="password" autocomplete="new-password" /></v-col>
+            <v-col v-if="form.connection_type === 'HIKVISION'" cols="12" md="3"><v-text-field v-model.number="form.retention_days" label="Архив, дней" type="number" min="1" max="3650" /></v-col>
+            <v-col v-if="form.connection_type === 'HIKVISION'" cols="12" md="3"><v-switch v-model="form.reject_unauthorized_tls" color="primary" label="Проверять TLS-сертификат" /></v-col>
             <v-col v-if="form.connection_type === 'RTSP'" cols="12"><v-text-field v-model="form.rtsp_url" label="Базовый RTSP URL" /></v-col>
             <v-col cols="12"><v-textarea v-model="form.comment" label="Комментарий" rows="2" /></v-col>
           </v-row>
@@ -91,13 +103,42 @@
     <v-dialog v-model="viewDialog" max-width="1120">
       <v-card>
         <v-card-title>Камеры устройства: {{ selectedDevice?.name }}</v-card-title>
-        <v-card-subtitle class="pb-3">Node: {{ selectedDevice?.node_name || 'не назначена' }} · Архив: Node</v-card-subtitle>
+        <v-card-subtitle class="pb-3">Node: {{ selectedDevice?.node_name || 'не назначена' }} · Архив: {{ selectedDevice?.archive_storage === 'device' ? 'устройство Hikvision' : 'node' }}</v-card-subtitle>
         <v-card-text>
           <div class="d-flex justify-end mb-3">
-            <v-btn v-if="auth.isAdmin" color="primary" prepend-icon="mdi-plus" @click="openCameraCreate">Добавить камеру</v-btn>
+            <v-btn v-if="auth.isAdmin && selectedDevice?.connection_type !== 'HIKVISION'" color="primary" prepend-icon="mdi-plus" @click="openCameraCreate">Добавить камеру</v-btn>
+            <v-chip v-else-if="selectedDevice?.connection_type === 'HIKVISION'" color="info" variant="tonal">Каналы синхронизируются автоматически</v-chip>
           </div>
 
-          <v-table>
+          <v-table v-if="selectedDevice?.connection_type === 'HIKVISION'">
+            <thead>
+              <tr>
+                <th>Канал</th>
+                <th>Название</th>
+                <th>Статус</th>
+                <th>Основной поток</th>
+                <th>Профили</th>
+                <th>Архив</th>
+                <th>Синхронизация</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="channel in hikvisionChannels" :key="channel.id">
+                <td>{{ channel.physical_channel }}</td>
+                <td>{{ channel.name || channel.id }}</td>
+                <td><v-chip size="small" :color="channel.online === false ? 'error' : channel.online === true ? 'success' : 'warning'">{{ channel.online === false ? 'offline' : channel.online === true ? 'online' : 'unknown' }}</v-chip></td>
+                <td><code>{{ channel.primary_stream_id }}</code></td>
+                <td>{{ Array.isArray(channel.streams) ? channel.streams.length : 0 }}</td>
+                <td>{{ channel.archive_storage === 'device' ? 'Hikvision' : 'Node' }} · {{ channel.retention_days }} дн.</td>
+                <td>{{ channel.discovered_at ? new Date(channel.discovered_at).toLocaleString() : '—' }}</td>
+              </tr>
+              <tr v-if="!hikvisionChannels.length">
+                <td colspan="7" class="text-center text-medium-emphasis py-6">Каналы ещё не получены. Проверьте node и запустите повторную синхронизацию.</td>
+              </tr>
+            </tbody>
+          </v-table>
+
+          <v-table v-else>
             <thead>
               <tr>
                 <th>Название</th>
@@ -207,7 +248,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { api } from '../api';
 import { useAuthStore } from '../stores/auth';
 
@@ -217,6 +258,7 @@ const devices = ref<any[]>([]);
 const nodes = ref<any[]>([]);
 const managedTokens = ref<any[]>([]);
 const deviceCameras = ref<any[]>([]);
+const hikvisionChannels = ref<any[]>([]);
 const selectedDevice = ref<any | null>(null);
 const search = ref('');
 const message = ref('');
@@ -231,7 +273,11 @@ const resolvingOnvif = ref(false);
 const togglingCamera = ref<string | null>(null);
 const editingId = ref<string | null>(null);
 const cameraEditingId = ref<string | null>(null);
-const connectionTypes = ['RTSP', 'ONVIF'];
+const connectionTypes = ['RTSP', 'ONVIF', 'HIKVISION'];
+const archiveStorageOptions = [
+  { title: 'На Hikvision-node', value: 'node' },
+  { title: 'На устройстве Hikvision/NVR', value: 'device' }
+];
 
 const form = reactive<any>({
   name: '',
@@ -242,6 +288,11 @@ const form = reactive<any>({
   username: '',
   password: '',
   rtsp_url: '',
+  archive_storage: 'node',
+  isapi_scheme: 'http',
+  rtsp_port: 554,
+  retention_days: 30,
+  reject_unauthorized_tls: true,
   comment: '',
   is_enabled: true
 });
@@ -272,6 +323,14 @@ const managedTokenOptions = computed(() => managedTokens.value
     value: token.id
   })));
 
+const compatibleNodes = computed(() => {
+  const expected = form.connection_type === 'HIKVISION' ? 'hikvision' : 'video';
+  return nodes.value.filter((node) => {
+    const kind = node.node_kind || node.capabilities?.node_kind || 'video';
+    return kind === expected;
+  });
+});
+
 const filteredDevices = computed(() => {
   const needle = search.value.trim().toLowerCase();
   if (!needle) return devices.value;
@@ -292,7 +351,9 @@ function normalizeStreamName(value: unknown): string {
 function resetForm() {
   Object.assign(form, {
     name: '', connection_type: 'RTSP', dvr_server_id: null,
-    host: '', port: null, username: '', password: '', rtsp_url: '', comment: '', is_enabled: true
+    host: '', port: null, username: '', password: '', rtsp_url: '', archive_storage: 'node',
+    isapi_scheme: 'http', rtsp_port: 554, retention_days: 30, reject_unauthorized_tls: true,
+    comment: '', is_enabled: true
   });
 }
 
@@ -346,13 +407,18 @@ function openEdit(device: any) {
   editingId.value = device.id;
   Object.assign(form, {
     name: device.name || '',
-    connection_type: device.connection_type === 'ONVIF' ? 'ONVIF' : 'RTSP',
+    connection_type: ['RTSP', 'ONVIF', 'HIKVISION'].includes(device.connection_type) ? device.connection_type : 'RTSP',
     dvr_server_id: device.dvr_server_id || null,
     host: device.host || '',
     port: device.port || null,
     username: device.username || '',
     password: '',
     rtsp_url: device.rtsp_url || '',
+    archive_storage: device.archive_storage || (device.connection_type === 'HIKVISION' ? 'device' : 'node'),
+    isapi_scheme: device.isapi_scheme || 'http',
+    rtsp_port: Number(device.rtsp_port || 554),
+    retention_days: Number(device.retention_days || 30),
+    reject_unauthorized_tls: device.reject_unauthorized_tls !== false,
     comment: device.comment || '',
     is_enabled: device.is_enabled !== false
   });
@@ -363,6 +429,7 @@ async function openView(device: any) {
   const { data } = await api.get(`/devices/${device.id}`);
   selectedDevice.value = data.item;
   deviceCameras.value = data.cameras || [];
+  hikvisionChannels.value = data.hikvision_channels || [];
   viewDialog.value = true;
 }
 
@@ -531,13 +598,25 @@ async function removeCamera(camera: any) {
 
 async function save() {
   saving.value = true;
-  const payload = { ...form };
+  const payload: Record<string, any> = { ...form };
   if (!payload.password) delete payload.password;
+  if (payload.connection_type === 'HIKVISION') {
+    payload.port = Number(payload.port || (payload.isapi_scheme === 'https' ? 443 : 80));
+    payload.rtsp_port = Number(payload.rtsp_port || 554);
+    payload.retention_days = Number(payload.retention_days || 30);
+    payload.rtsp_url = null;
+  } else {
+    payload.archive_storage = 'node';
+    delete payload.isapi_scheme;
+    delete payload.rtsp_port;
+    delete payload.retention_days;
+    delete payload.reject_unauthorized_tls;
+  }
   try {
     if (editingId.value) await api.patch(`/devices/${editingId.value}`, payload);
     else await api.post('/devices', payload);
     formDialog.value = false;
-    notify('Устройство сохранено; назначенная node применена ко всем его камерам');
+    notify(form.connection_type === 'HIKVISION' ? 'Hikvision-устройство сохранено; node получит его и автоматически синхронизирует каналы' : 'Устройство сохранено; назначенная node применена ко всем его камерам');
     await load();
   } catch (err: any) {
     notify(err.response?.data?.error || err.message || 'Ошибка сохранения устройства', 'error');
@@ -556,6 +635,22 @@ async function remove(device: any) {
     notify(err.response?.data?.error || err.message || 'Ошибка удаления устройства', 'error');
   }
 }
+
+
+watch(() => form.connection_type, (value, previous) => {
+  if (value === previous) return;
+  form.dvr_server_id = null;
+  if (value === 'HIKVISION') {
+    form.archive_storage = 'device';
+    form.isapi_scheme = 'http';
+    form.port = 80;
+    form.rtsp_port = 554;
+    form.retention_days = 30;
+  } else {
+    form.archive_storage = 'node';
+    if (previous === 'HIKVISION') form.port = null;
+  }
+});
 
 onMounted(load);
 </script>
