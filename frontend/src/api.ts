@@ -2,7 +2,9 @@ import axios from 'axios';
 
 export const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
-  timeout: 30_000
+  // Hikvision NVR archive discovery can legitimately take longer than 30s
+  // when the requested retention window is split into several daily searches.
+  timeout: 120_000
 });
 
 api.interceptors.request.use((config) => {
