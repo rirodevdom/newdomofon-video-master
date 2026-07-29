@@ -12,7 +12,7 @@ import { cameraGroupsRouter } from './routes/cameraGroups.js';
 import { camerasRouter } from './routes/cameras.js';
 import { favoritesRouter } from './routes/favorites.js';
 import { playerPublicArchiveRouter, playerRouter } from './routes/player.js';
-import { hikvisionPlayerRouter } from './routes/hikvisionPlayer.js';
+import { hikvisionMediaProxyRouter, hikvisionPlayerRouter } from './routes/hikvisionPlayer.js';
 import { managedAdminPlayerRouter } from './routes/managedAdminPlayer.js';
 import { mediaRouter } from './routes/media.js';
 import { auditRouter } from './routes/audit.js';
@@ -51,6 +51,10 @@ app.use('/api/public-playback-tokens', globalPlaybackTokensRouter);
 app.use('/api/public-media', mediaGlobalPublicTokenRouter);
 app.use(morgan('combined'));
 app.use(rateLimit({ windowMs: 60_000, limit: 600, standardHeaders: 'draft-7', legacyHeaders: false }));
+
+// Browser-facing Hikvision HLS/MP4 traffic is token-authenticated and proxied
+// through master so an HTTPS portal never exposes or loads an http:// node URL.
+app.use('/api/hikvision-media', hikvisionMediaProxyRouter);
 
 app.get('/api/health', (_req, res) => {
   const disk = getMasterDiskState();
