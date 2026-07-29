@@ -2,19 +2,20 @@
 
 Центральный **control plane** NewDomofon Video: Vue/Vuetify admin UI, backend API, PostgreSQL, пользователи/RBAC, устройства, камеры, video node records, managed tokens, SmartYard compatibility, media/events gateways и MediaMTX RTSP gateway.
 
-Этот репозиторий устанавливается **только на master**. Запись камер, live, DVR-архив и локальные события выполняются на video node из проекта `newdomofon-video-node`.
+Этот репозиторий устанавливается **только на master**. Запись камер, live, локальный DVR-архив и события выполняются на универсальной video node из проекта `newdomofon-video-node`.
 
 > Production: Debian 12, Node.js 22, PostgreSQL 15, Nginx, FFmpeg, systemd и MediaMTX. Docker не требуется.
 
-## Серверы без доступа к репозиторию
+## Граница ответственности
 
-Установка и обновление production-сервера выполняются только из ZIP/TAR, который:
+Master и обычная video node поддерживают только vendor-neutral контракты:
 
-1. скачан на другом компьютере;
-2. передан на сервер;
-3. распакован в отдельную папку, например `/root/newdomofon-video-master-main`.
+- RTSP-потоки;
+- ONVIF discovery, profile lookup и PullPoint events;
+- локальную запись, live, ranges и MP4 export;
+- managed tokens и SmartYard-compatible media gateway.
 
-Git на сервере не требуется и не используется. Нельзя применять `clone`, `fetch`, `pull`, `reset` или другие Git-команды для production-установки и обновления.
+В этих двух проектах нет Hikvision ISAPI, `alertStream`, vendor-specific поиска каналов, поиска записей NVR и воспроизведения архива устройства. Эти возможности будут реализованы отдельным сервисом и отдельным репозиторием Hikvision-node, который не входит в runtime master или обычной video node.
 
 ## Архитектура
 
@@ -41,65 +42,31 @@ Git на сервере не требуется и не используется
 | HLS / MPEG-TS / DASH / JPEG / archive / events       |
 +------------------------------------------------------+
                  |
-                 | RTSP / ONVIF / Hikvision
+                 | RTSP / ONVIF
                  v
               Камеры / NVR
 ```
 
-Master отвечает за:
+Master отвечает за PostgreSQL, RBAC, аудит, устройства, камеры, placement, node heartbeat, managed tokens, media/events/preview gateways, SmartYard compatibility, MediaMTX и disk guard. Master не записывает камеры и не хранит основной DVR-архив.
 
-- PostgreSQL и административную конфигурацию;
-- пользователей, роли и аудит;
-- устройства, камеры и placement;
-- node records и heartbeat;
-- managed tokens many-to-many;
-- media/events/preview gateways;
-- SmartYard compatibility;
-- RTSP gateway через MediaMTX;
-- master disk guard.
+## Серверы без доступа к GitHub
 
-Master не должен записывать камеры или хранить основной DVR-архив.
-
-## Регистрация video node
-
-Master больше не генерирует:
+Production устанавливается и обновляется только из ZIP/TAR, скачанного на другом компьютере и распакованного отдельно, например:
 
 ```text
-DVR_NODE_ID
-DVR_NODE_TOKEN
-DVR_NODE_MEDIA_SECRET
+/root/newdomofon-video-master-main
 ```
 
-Правильный порядок:
+Git на production-сервере не требуется.
 
-1. установить video node из распакованного node-архива;
-2. получить `/root/newdomofon-node-master-registration.env`;
-3. открыть `Администрирование → Ноды → Создать node`;
-4. ввести значения из файла;
-5. дождаться heartbeat.
-
-Подробно: [docs/MANUAL_NODE_REGISTRATION.md](docs/MANUAL_NODE_REGISTRATION.md).
-
-## Установка master из распакованного архива
-
-После передачи и распаковки ZIP:
+## Установка master
 
 ```bash
 cd /root/newdomofon-video-master-main
 bash scripts/install-master-local-root.sh --domain 10.106.1.30 --no-tls
 ```
 
-Установщик:
-
-- использует файлы текущей распакованной папки;
-- не обращается к репозиторию;
-- устанавливает зависимости Debian;
-- создаёт PostgreSQL и runtime-конфигурацию;
-- собирает backend и frontend;
-- устанавливает systemd, Nginx и gateways;
-- сохраняет secrets в `/etc/newdomofon-video/app.env`.
-
-Можно передать сам архив установщику:
+Или из архива:
 
 ```bash
 bash scripts/install-master-from-archive.sh \
@@ -108,41 +75,45 @@ bash scripts/install-master-from-archive.sh \
   --no-tls
 ```
 
+## Регистрация video node
+
+1. Установите обычную video node из её архива.
+2. Получите `/root/newdomofon-node-master-registration.env`.
+3. Откройте `Администрирование → Ноды → Создать node`.
+4. Введите `node_id`, agent token, media secret и URL.
+5. Дождитесь heartbeat.
+
+Подробно: [docs/MANUAL_NODE_REGISTRATION.md](docs/MANUAL_NODE_REGISTRATION.md).
+
 ## Обновление master
 
-Сначала обновите все video node, затем master.
-
-Из корня нового распакованного архива:
+Сначала обновляются все обычные video node, затем master:
 
 ```bash
 cd /root/newdomofon-video-master-main
 bash update-installed-project.sh --dry-run
-sudo bash update-installed-project.sh
+bash update-installed-project.sh
 ```
 
-Updater создаёт backup исходников, `app.env`, Nginx, frontend и PostgreSQL, затем синхронизирует файлы архива и запускает штатный deploy. Версия архива фиксируется SHA-256 отпечатком содержимого.
-
-Подробно: [docs/UPDATE_FROM_ARCHIVE.md](docs/UPDATE_FROM_ARCHIVE.md).
+Updater создаёт backup исходников, `app.env`, Nginx, frontend и PostgreSQL, затем синхронизирует архив и запускает штатный deploy. Миграция удаления vendor-specific runtime сохраняет камеры и RTSP URL, переводит прежний тип устройства в `RTSP`, оставляет только локальный архив node и удаляет производные таблицы индекса архива устройства.
 
 ## Managed tokens
-
-Модель many-to-many:
 
 ```text
 одна камера → несколько пользовательских токенов
 один токен → несколько камер
 ```
 
-Токен с режимом автоматического назначения привязывается ко всем существующим и новым камерам. Управление привязками находится на странице «Камеры», а готовые ссылки каждого назначенного токена — на странице просмотра камеры.
+Управление привязками находится на странице «Камеры», готовые ссылки — на странице просмотра камеры.
 
 ## Production-пути
 
 ```text
-/opt/newdomofon-video-master/                    установленная копия проекта
-/etc/newdomofon-video/app.env                    runtime config и secrets
-/etc/newdomofon-video/mediamtx.yml               MediaMTX config
-/var/www/newdomofon-video/                       frontend
-/var/cache/newdomofon-video/smartyard-preview/   preview cache
+/opt/newdomofon-video-master/
+/etc/newdomofon-video/app.env
+/etc/newdomofon-video/mediamtx.yml
+/var/www/newdomofon-video/
+/var/cache/newdomofon-video/smartyard-preview/
 /var/log/newdomofon-video/
 /run/newdomofon-video/master-disk-state.json
 /etc/nginx/sites-available/newdomofon-video.conf
@@ -155,7 +126,6 @@ Updater создаёт backup исходников, `app.env`, Nginx, frontend �
 systemctl is-active newdomofon-video-backend.service
 systemctl is-active newdomofon-smartyard-compat.service
 systemctl is-active newdomofon-video-rtsp-gateway.service
-
 curl -fsS http://127.0.0.1:3000/api/health | jq
 curl -fsS http://127.0.0.1/api/health | jq
 nginx -t
@@ -173,6 +143,7 @@ systemctl disable --now newdomofon-video-dvr.service 2>/dev/null || true
 - [Обновление из распакованного архива](docs/UPDATE_FROM_ARCHIVE.md)
 - [Ручная регистрация video node](docs/MANUAL_NODE_REGISTRATION.md)
 - [Все переменные master `.env`](docs/ENVIRONMENT.md)
+- [Граница репозиториев](docs/REPOSITORY_SPLIT.md)
 - [Автоматический RTSP gateway](docs/AUTOMATIC_RTSP_GATEWAY.md)
 - [Защита диска](docs/DISK_PROTECTION.md)
 
