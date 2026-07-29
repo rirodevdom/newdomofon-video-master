@@ -76,8 +76,7 @@ function deviceConfigured(row: DeviceRow): boolean {
   if (!row.name || !row.connection_type || !row.dvr_server_id) return false;
   if (row.connection_type === 'RTSP') return Boolean(row.rtsp_url || row.host);
   if (row.connection_type === 'ONVIF') return Boolean(row.host && row.port);
-  if (row.connection_type === 'HIKVISION') return Boolean(row.host && row.port && row.username && row.has_password);
-  return Boolean(row.host || row.rtsp_url);
+  return false;
 }
 
 dashboardRouter.get('/summary', asyncHandler(async (_req, res) => {

@@ -156,11 +156,9 @@ nodeAgentRouter.post('/heartbeat', requireNode, asyncHandler(async (req: NodeAge
 nodeAgentRouter.get('/config', requireNode, asyncHandler(async (req: NodeAgentRequest, res) => {
   const cameras = await query(
     `SELECT c.id, c.name, c.stream_name, c.source_url,
-            device.archive_storage,
             c.rtmp_push_url, c.retention_days, c.is_enabled,
             c.device_id,
             device.connection_type AS device_connection_type,
-            device.archive_storage AS device_archive_storage,
             device.host AS device_host,
             device.port AS device_port,
             device.username AS device_username,

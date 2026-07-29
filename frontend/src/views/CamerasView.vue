@@ -10,8 +10,9 @@
     </div>
 
     <v-alert type="info" variant="tonal" class="mb-4">
-      Параметры потока, устройство, video node, место хранения архива и срок хранения настраиваются внутри раздела «Устройства».
-      Привязки управляемых токенов настраиваются здесь, а готовые ссылки доступны на странице просмотра камеры.
+      Поток, устройство, video node и срок хранения настраиваются в разделе «Устройства».
+      Live и архив всегда обслуживаются локальным DVR назначенной video node.
+      Привязки управляемых токенов настраиваются здесь.
     </v-alert>
 
     <v-alert v-if="message" :type="messageType" variant="tonal" class="mb-4" closable @click:close="message = ''">
@@ -26,8 +27,7 @@
             <th>Поток</th>
             <th>Протокол</th>
             <th>Устройство</th>
-            <th>Node устройства</th>
-            <th>Архив устройства</th>
+            <th>Video node</th>
             <th>Архив, дней</th>
             <th>Включена</th>
             <th>Токены</th>
@@ -41,7 +41,6 @@
             <td><v-chip size="small" :color="cameraProtocolColor(camera)">{{ cameraProtocolTitle(camera) }}</v-chip></td>
             <td>{{ camera.device_name || '—' }}</td>
             <td>{{ camera.dvr_server_name || '—' }}</td>
-            <td>{{ archiveStorageTitle(camera.device_archive_storage || camera.archive_storage) }}</td>
             <td>{{ camera.retention_days }}</td>
             <td>
               <v-chip size="small" :color="camera.is_enabled ? 'success' : 'default'">
@@ -82,7 +81,7 @@
             </td>
           </tr>
           <tr v-if="!filteredCameras.length">
-            <td colspan="10" class="text-center text-medium-emphasis py-6">Камеры не найдены</td>
+            <td colspan="9" class="text-center text-medium-emphasis py-6">Камеры не найдены</td>
           </tr>
         </tbody>
       </v-table>
@@ -112,7 +111,7 @@
         <v-card-text>
           <v-alert type="info" variant="tonal" density="compact" class="mb-4">
             Выберите пользовательские токены, которые должны быть привязаны к камере. Токены с режимом
-            «всем камерам» отмечены как автоматические и останутся привязанными, пока этот режим включён в администрировании.
+            «всем камерам» отмечены как автоматические и остаются привязанными, пока этот режим включён.
           </v-alert>
 
           <v-select
@@ -228,19 +227,11 @@ function notify(text: string, type: 'success' | 'error' = 'success') {
 }
 
 function cameraProtocolTitle(camera: any) {
-  if (camera.device_connection_type === 'HIKVISION') return 'HIKVISION';
   return camera.is_onvif ? 'ONVIF' : 'RTSP';
 }
 
 function cameraProtocolColor(camera: any) {
-  if (camera.device_connection_type === 'HIKVISION') return 'deep-orange';
   return camera.is_onvif ? 'indigo' : 'blue';
-}
-
-function archiveStorageTitle(value: string) {
-  if (value === 'device') return 'Устройство';
-  if (value === 'both') return 'Node + устройство';
-  return 'Node';
 }
 
 function isTokenUsable(token: any) {

@@ -1,106 +1,69 @@
 # Master/node live-first rollout
 
-This runbook is the safe order for bringing a distributed installation back to a stable state.
+Безопасный порядок восстановления распределённой установки.
 
-## Goal
+## Цель
 
-The master is the only management point. It runs backend, frontend, PostgreSQL and compatibility services. It must not record cameras in strict master/node production.
+Master запускает backend, frontend, PostgreSQL и compatibility gateways. В strict master/node production он не записывает камеры.
 
-A video node runs `newdomofon-video-dvr`, receives assigned cameras from the master through `/api/node-agent/config`, records live/archive locally, and serves signed media URLs.
+Обычная video node получает назначенные камеры через `/api/node-agent/config`, читает RTSP, записывает live и локальный архив, обслуживает signed media URL и ONVIF events.
 
-## Phase 1. Stabilize live
+## 1. Стабилизировать live
 
-Run diagnostics on both servers:
-
-```bash
-cd /opt/newdomofon-video
-curl --retry 5 --retry-delay 2 --connect-timeout 20 --max-time 120 -fsSL \
-  https://raw.githubusercontent.com/rirodevdom/newdomofon-video/main/scripts/diagnose-master-node.sh \
-  -o /tmp/diagnose-master-node.sh
-sudo bash /tmp/diagnose-master-node.sh
-```
-
-Apply the live-first baseline.
-
-On master:
+На master:
 
 ```bash
-cd /opt/newdomofon-video
-curl --retry 5 --retry-delay 2 --connect-timeout 20 --max-time 120 -fsSL \
-  https://raw.githubusercontent.com/rirodevdom/newdomofon-video/main/scripts/apply-live-first-baseline.sh \
-  -o /tmp/apply-live-first-baseline.sh
-sudo ROLE=master bash /tmp/apply-live-first-baseline.sh
+systemctl is-active newdomofon-video-backend.service
+systemctl is-active newdomofon-smartyard-compat.service
+curl -fsS http://127.0.0.1:3000/api/health | jq
 ```
 
-On node:
+На node:
 
 ```bash
-cd /opt/newdomofon-video
-curl --retry 5 --retry-delay 2 --connect-timeout 20 --max-time 120 -fsSL \
-  https://raw.githubusercontent.com/rirodevdom/newdomofon-video/main/scripts/apply-live-first-baseline.sh \
-  -o /tmp/apply-live-first-baseline.sh
-sudo ROLE=node bash /tmp/apply-live-first-baseline.sh
+systemctl is-active newdomofon-video-dvr.service
+curl -fsS http://127.0.0.1:3010/health | jq
+curl -fsS http://127.0.0.1:3010/recorders | jq
+journalctl -u newdomofon-video-dvr -n 200 --no-pager
 ```
 
-This temporarily disables ONVIF events, Hikvision events, Hikvision archive indexing and video-motion on the node. The purpose is to prove that one FFmpeg recorder per camera can keep live running without recorder exits.
-
-Watch the node:
+На время диагностики можно отключить программное распознавание движения и ONVIF events, не затрагивая запись:
 
 ```bash
-journalctl -u newdomofon-video-dvr -f -l \
-  | grep -E 'Started recorder|Recorder .* exited|No route|Connection timed out|ffmpeg:'
+ENV_FILE=/etc/newdomofon-video/app.env
+sed -i -E '/^(VIDEO_MOTION_ENABLED|ONVIF_EVENTS_ENABLED)=/d' "$ENV_FILE"
+printf '%s\n' \
+  'VIDEO_MOTION_ENABLED=false' \
+  'ONVIF_EVENTS_ENABLED=false' >>"$ENV_FILE"
+systemctl restart newdomofon-video-dvr.service
 ```
 
-The live phase is healthy when recorders do not exit and `No route to host` or `Connection timed out` no longer appears for the camera subnet.
+Live считается стабильным, когда рекордеры не завершаются, `live.m3u8` обновляется, а в журнале нет сетевых timeout к подсети камер.
 
-## Phase 2. Enable events one source at a time
-
-After live is stable, enable only one event source at a time.
-
-For Hikvision devices, prefer ISAPI alertStream:
+## 2. Проверить локальный архив
 
 ```bash
-sudo sed -i -E '/^DVR_HIKVISION_EVENTS_ENABLED=/d' /etc/newdomofon-video/app.env
-echo 'DVR_HIKVISION_EVENTS_ENABLED=true' | sudo tee -a /etc/newdomofon-video/app.env >/dev/null
-sudo systemctl restart newdomofon-video-dvr.service
+curl -fsS http://127.0.0.1:3010/recorders | jq
+find /var/lib/newdomofon-video/dvr -type f \
+  \( -name '*.ts' -o -name 'live.m3u8' \) \
+  -printf '%TY-%Tm-%Td %TH:%TM:%TS %p\n' | tail -30
 ```
 
-For ONVIF cameras, enable PullPoint only after confirming the camera really emits motion state changes and not only initialization snapshots:
+После появления завершённых сегментов проверьте ranges и воспроизведение через веб-плеер master.
+
+## 3. Включить ONVIF events
+
+Только после стабильного live:
 
 ```bash
-sudo sed -i -E '/^(EVENTS_ENABLED|ONVIF_EVENTS_ENABLED)=/d' /etc/newdomofon-video/app.env
-cat <<'EOF' | sudo tee -a /etc/newdomofon-video/app.env >/dev/null
-EVENTS_ENABLED=true
-ONVIF_EVENTS_ENABLED=true
-EOF
-sudo systemctl restart newdomofon-video-dvr.service
+ENV_FILE=/etc/newdomofon-video/app.env
+sed -i -E '/^ONVIF_EVENTS_ENABLED=/d' "$ENV_FILE"
+echo 'ONVIF_EVENTS_ENABLED=true' >>"$ENV_FILE"
+systemctl restart newdomofon-video-dvr.service
 ```
 
-Check stored events on the master:
+Проверяйте локальную SQLite node и timeline через master. Программное обнаружение движения включайте только для камер без пригодных ONVIF events.
 
-```bash
-set -a
-. /etc/newdomofon-video/app.env
-set +a
-psql "$DATABASE_URL" -c "
-select stream_name, event_type, event_state, occurred_at, created_at
-from camera_events
-order by occurred_at desc
-limit 50;"
-```
+## Vendor-specific функции
 
-## Phase 3. Device archive indexing
-
-Enable Hikvision archive indexing only after live and events are stable:
-
-```bash
-sudo sed -i -E '/^DVR_HIKVISION_ARCHIVE_INDEX_ENABLED=/d' /etc/newdomofon-video/app.env
-echo 'DVR_HIKVISION_ARCHIVE_INDEX_ENABLED=true' | sudo tee -a /etc/newdomofon-video/app.env >/dev/null
-sudo systemctl restart newdomofon-video-dvr.service
-```
-
-Keep `DVR_DEVICE_ARCHIVE_MAX_SESSIONS_PER_DEVICE=1` unless the device/NVR is proven to handle more concurrent playback sessions.
-
-## Do not use video-motion as the primary event source
-
-`VIDEO_MOTION_ENABLED=true` is only a fallback for cameras that do not provide ONVIF or Hikvision motion events. It must read local HLS, not RTSP, and should be enabled only for selected streams.
+Обычная video node не содержит vendor-specific event collectors, поиска каналов или архива устройства. Такие функции должны работать только в отдельном специализированном сервисе и не включаются в этот runbook.

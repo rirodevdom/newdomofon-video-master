@@ -41,31 +41,13 @@
           </v-card-text>
         </v-card>
 
-        <v-card v-if="archiveSourceItems.length > 1" class="mb-4">
-          <v-card-title>Источник архива</v-card-title>
-          <v-card-text>
-            <v-select
-              v-model="archiveSource"
-              :items="archiveSourceItems"
-              item-title="title"
-              item-value="value"
-              label="Смотреть архив"
-              density="compact"
-              variant="outlined"
-              :disabled="loading || archivePreparing"
-              hide-details
-            />
-          </v-card-text>
-        </v-card>
-
         <v-card>
           <v-card-title>Технические данные</v-card-title>
           <v-card-text>
             <div class="mb-2"><strong>Stream:</strong> {{ camera?.stream_name || '—' }}</div>
             <div class="mb-2"><strong>Node:</strong> {{ camera?.dvr_server_name || '—' }}</div>
             <div class="mb-2"><strong>Архив:</strong> {{ camera?.retention_days || '—' }} дней</div>
-            <div class="mb-2"><strong>Хранение:</strong> {{ archiveStorageLabel }}</div>
-            <div class="mb-2"><strong>Источник:</strong> {{ archiveSourceLabel }}</div>
+            <div class="mb-2"><strong>Хранение:</strong> локальный архив Node</div>
             <div class="mb-2"><strong>Live:</strong> <code>{{ tokenlessLiveUrl }}</code></div>
             <div><strong>Archive:</strong> <code>{{ tokenlessArchiveUrl }}</code></div>
           </v-card-text>
@@ -108,63 +90,17 @@ let latestArchiveRanges: Array<{ startMs: number; endMs: number }> = [];
 let latestArchiveRangesLoadedAt = 0;
 let latestArchiveRangesKey = '';
 let assetsPromise: Promise<void> | null = null;
-let archiveBuildLock: Promise<string> | null = null;
-const DEVICE_ARCHIVE_MIN_PLAY_SECONDS = 30;
+let archiveSeekGeneration = 0;
+let archiveSeekAbortController: AbortController | null = null;
+
 const NODE_ARCHIVE_MIN_PLAY_SECONDS = 60;
 const NODE_ARCHIVE_MAX_PLAY_SECONDS = 10 * 60;
 const ARCHIVE_SEEK_PREROLL_SECONDS = 12;
 const ARCHIVE_LIVE_EDGE_FALLBACK_SECONDS = 180;
 
-type ArchiveStorage = 'node' | 'device' | 'both';
-type ArchiveSource = 'auto' | 'node' | 'device';
-
 const cameraId = computed(() => String(route.params.id || ''));
 const tokenlessLiveUrl = computed(() => camera.value?.stream_name ? `/cameras/${camera.value.stream_name}/live.m3u8` : '—');
 const tokenlessArchiveUrl = computed(() => camera.value?.stream_name ? `/cameras/${camera.value.stream_name}/archive.m3u8` : '—');
-const archiveSource = ref<ArchiveSource>('auto');
-const archiveStorage = computed<ArchiveStorage>(() => {
-  const deviceStorage = normalizeArchiveStorage(camera.value?.device_archive_storage);
-  if (deviceStorage === 'both') return 'both';
-  return normalizeArchiveStorage(camera.value?.archive_storage || camera.value?.device_archive_storage);
-});
-const archiveSourceItems = computed(() => {
-  if (archiveStorage.value === 'both') {
-    return [
-      { title: 'Авто (сначала Node)', value: 'auto' },
-      { title: 'Node', value: 'node' },
-      { title: 'Устройство', value: 'device' }
-    ];
-  }
-  if (archiveStorage.value === 'device') return [{ title: 'Устройство', value: 'device' }];
-  return [{ title: 'Node', value: 'node' }];
-});
-const archiveStorageLabel = computed(() => {
-  if (archiveStorage.value === 'both') return 'Node + устройство';
-  if (archiveStorage.value === 'device') return 'Устройство';
-  return 'Node';
-});
-const archiveSourceLabel = computed(() => archiveSourceItems.value.find((item) => item.value === archiveSource.value)?.title || archiveSource.value);
-
-function normalizeArchiveStorage(raw: unknown): ArchiveStorage {
-  return raw === 'device' || raw === 'both' ? raw : 'node';
-}
-
-function defaultArchiveSourceForStorage(storage: ArchiveStorage): ArchiveSource {
-  if (storage === 'both') return 'auto';
-  return storage;
-}
-
-function isArchiveSourceAllowed(storage: ArchiveStorage, source: ArchiveSource) {
-  if (storage === 'both') return true;
-  return source === storage;
-}
-
-function syncArchiveSourceWithCamera() {
-  const storage = archiveStorage.value;
-  if (!isArchiveSourceAllowed(storage, archiveSource.value)) {
-    archiveSource.value = defaultArchiveSourceForStorage(storage);
-  }
-}
 
 function normalizeTimelineEventState(raw: unknown): boolean | null {
   if (typeof raw === 'boolean') return raw;
@@ -248,7 +184,7 @@ async function ensurePlayerKitAssets(): Promise<void> {
 
     const sdk = await waitForPlayerKitSdk();
     if (!sdk?.create) {
-      throw new Error('Player kit загружен, но глобальный SDK не найден. Проверьте /player-kit/newdomofon-player.iife.js и browser console на SyntaxError.');
+      throw new Error('Player kit загружен, но глобальный SDK не найден. Проверьте player-kit и browser console.');
     }
   })();
 
@@ -256,8 +192,10 @@ async function ensurePlayerKitAssets(): Promise<void> {
 }
 
 function destroyPlayer() {
+  archiveSeekGeneration += 1;
+  archiveSeekAbortController?.abort();
+  archiveSeekAbortController = null;
   archivePreparing.value = false;
-  archiveBuildLock = null;
   player?.destroy();
   player = null;
   if (playerRoot.value) playerRoot.value.innerHTML = '';
@@ -266,7 +204,6 @@ function destroyPlayer() {
 async function loadCamera() {
   const { data } = await api.get(`/cameras/${encodeURIComponent(cameraId.value)}`);
   camera.value = data.item;
-  syncArchiveSourceWithCamera();
 }
 
 async function loadStatus() {
@@ -288,15 +225,17 @@ async function createPlayer() {
   const id = cameraId.value;
   const streamName = camera.value.stream_name;
   const title = camera.value.name || streamName;
-  const currentArchiveStorage = archiveStorage.value;
+
   const loadArchiveRanges = async (force = false) => {
     const end = new Date().toISOString();
     const start = new Date(Date.now() - Math.max(1, Number(camera.value?.retention_days || 1)) * 24 * 3600 * 1000).toISOString();
-    const rangesKey = `${archiveSource.value}|${start.slice(0, 13)}|${end.slice(0, 13)}`;
+    const rangesKey = `${start.slice(0, 13)}|${end.slice(0, 13)}`;
     if (!force && latestArchiveRanges.length && latestArchiveRangesKey === rangesKey && Date.now() - latestArchiveRangesLoadedAt < 15_000) {
       return latestArchiveRanges;
     }
-    const ranges = await api.get(`/player/${encodeURIComponent(id)}/archive/ranges`, { params: { start, end, source: archiveSource.value } });
+    const ranges = await api.get(`/player/${encodeURIComponent(id)}/archive/ranges`, {
+      params: { start, end, source: 'node' }
+    });
     latestArchiveRanges = (ranges.data.items || []).map((item: any) => ({
       startMs: new Date(item.start).getTime(),
       endMs: new Date(item.end).getTime()
@@ -316,6 +255,8 @@ async function createPlayer() {
     nativeControls: 'auto',
     maxDownloadDurationSec: 3600,
     onError: (err: unknown, context?: string) => {
+      const candidate = err as { name?: string; code?: string } | null;
+      if (candidate?.name === 'AbortError' || candidate?.name === 'CanceledError' || candidate?.code === 'ERR_CANCELED') return;
       error.value = `${context ? `${context}: ` : ''}${err instanceof Error ? err.message : String(err)}`;
     },
     external: {
@@ -330,71 +271,90 @@ async function createPlayer() {
           },
           archive: {
             buildUrl: async (fromEpochSec: number, durationSec: number) => {
-              if (archiveBuildLock) await archiveBuildLock.catch(() => undefined);
-
+              const requestGeneration = ++archiveSeekGeneration;
+              archiveSeekAbortController?.abort();
+              const controller = new AbortController();
+              archiveSeekAbortController = controller;
               archivePreparing.value = true;
-              const buildPromise = (async () => {
-                const requestedWindowStartMs = fromEpochSec * 1000;
-                const requestedSeekMs = requestedWindowStartMs + durationSec * 500;
-                let effectiveStartMs = requestedSeekMs;
-                let matchingRange = latestArchiveRanges.find((range) => range.startMs <= requestedSeekMs && range.endMs > requestedSeekMs);
-                const selectedArchiveSource = archiveSource.value;
-                const useDeviceArchive = selectedArchiveSource === 'device' || (selectedArchiveSource === 'auto' && currentArchiveStorage !== 'node');
-                const minPlayMs = (useDeviceArchive ? DEVICE_ARCHIVE_MIN_PLAY_SECONDS : NODE_ARCHIVE_MIN_PLAY_SECONDS) * 1000;
 
-                if (requestedSeekMs > Date.now() + 60_000) {
+              try {
+                const nowMs = Date.now();
+                const requestedWindowStartMs = fromEpochSec * 1000;
+                const requestedWindowDurationMs = Math.max(1, Number(durationSec) || 1) * 1000;
+                const rawRequestedSeekMs = requestedWindowStartMs + requestedWindowDurationMs / 2;
+                if (rawRequestedSeekMs > nowMs + 60_000) {
                   throw new Error('Выбранное время ещё не записано в архив');
                 }
 
+                const requestedSeekMs = Math.min(rawRequestedSeekMs, nowMs - 1000);
+                if (!latestArchiveRanges.length) {
+                  await loadArchiveRanges(true).catch(() => []);
+                }
+
+                let targetSeekMs = requestedSeekMs;
+                let matchingRange = latestArchiveRanges.find((range) => range.startMs <= targetSeekMs && range.endMs > targetSeekMs);
+
                 if (latestArchiveRanges.length && !matchingRange) {
-                  const nextRange = latestArchiveRanges.find((range) => range.startMs > requestedSeekMs);
-                  const latestRange = latestArchiveRanges[latestArchiveRanges.length - 1];
-                  const isLiveEdgeRequest = requestedSeekMs >= Date.now() - ARCHIVE_LIVE_EDGE_FALLBACK_SECONDS * 1000;
-                  if (!nextRange && isLiveEdgeRequest && latestRange) {
-                    matchingRange = latestRange;
-                    effectiveStartMs = Math.max(matchingRange.startMs, matchingRange.endMs - minPlayMs);
-                    error.value = '';
-                  } else if (!nextRange) {
-                    throw new Error('В выбранной точке архива нет');
-                  } else {
+                  const nextRange = latestArchiveRanges.find((range) => range.startMs > targetSeekMs);
+                  const previousRange = [...latestArchiveRanges].reverse().find((range) => range.endMs <= targetSeekMs);
+                  const isLiveEdgeRequest = targetSeekMs >= nowMs - ARCHIVE_LIVE_EDGE_FALLBACK_SECONDS * 1000;
+
+                  if (nextRange) {
                     matchingRange = nextRange;
-                    effectiveStartMs = matchingRange.startMs;
-                    error.value = 'В выбранной точке архива нет, открыт ближайший доступный фрагмент';
+                    targetSeekMs = nextRange.startMs;
+                    error.value = 'В выбранной точке архива нет, открыт следующий доступный фрагмент';
+                  } else if (isLiveEdgeRequest && previousRange) {
+                    matchingRange = previousRange;
+                    targetSeekMs = Math.max(previousRange.startMs, Math.min(targetSeekMs, previousRange.endMs - 1000));
+                    error.value = '';
+                  } else {
+                    throw new Error('В выбранной точке архива нет');
                   }
                 }
-                if (matchingRange && matchingRange.startMs <= requestedSeekMs && matchingRange.endMs > requestedSeekMs) {
-                  effectiveStartMs = Math.max(matchingRange.startMs, requestedSeekMs - ARCHIVE_SEEK_PREROLL_SECONDS * 1000);
-                }
-                if (useDeviceArchive && matchingRange && matchingRange.endMs - effectiveStartMs < minPlayMs && matchingRange.endMs - matchingRange.startMs >= minPlayMs) {
-                  effectiveStartMs = Math.max(matchingRange.startMs, matchingRange.endMs - minPlayMs);
-                }
 
-                const start = new Date(effectiveStartMs).toISOString();
+                const effectiveStartMs = matchingRange
+                  ? Math.max(matchingRange.startMs, targetSeekMs - ARCHIVE_SEEK_PREROLL_SECONDS * 1000)
+                  : Math.max(0, targetSeekMs - ARCHIVE_SEEK_PREROLL_SECONDS * 1000);
+
                 const maxAvailableDuration = matchingRange
                   ? Math.max(1, Math.floor((matchingRange.endMs - effectiveStartMs) / 1000))
-                  : durationSec;
-                const minRequestedDuration = useDeviceArchive ? DEVICE_ARCHIVE_MIN_PLAY_SECONDS : NODE_ARCHIVE_MIN_PLAY_SECONDS;
-                const maxRequestedDuration = useDeviceArchive ? 300 : NODE_ARCHIVE_MAX_PLAY_SECONDS;
-                const requestedDuration = Math.max(1, Math.min(Math.max(durationSec, minRequestedDuration), maxAvailableDuration, maxRequestedDuration));
-                const end = new Date(effectiveStartMs + requestedDuration * 1000).toISOString();
-                const archive = await api.get(`/player/${encodeURIComponent(id)}/archive`, {
-                  params: { start, end, source: selectedArchiveSource }
-                });
-                return archive.data.archiveHls || archive.data.hls_url || archive.data.playback_url;
-              })();
-              archiveBuildLock = buildPromise;
+                  : Math.max(1, durationSec);
+                const requestedDuration = Math.max(1, Math.min(Math.max(durationSec, NODE_ARCHIVE_MIN_PLAY_SECONDS), maxAvailableDuration, NODE_ARCHIVE_MAX_PLAY_SECONDS));
+                const latestAllowedEndMs = Math.min(matchingRange?.endMs ?? nowMs - 1000, nowMs - 1000);
+                const effectiveEndMs = Math.min(effectiveStartMs + requestedDuration * 1000, latestAllowedEndMs);
 
-              try {
-                return await buildPromise;
+                if (effectiveEndMs <= effectiveStartMs) {
+                  throw new Error('В выбранной точке ещё нет завершённого архивного фрагмента');
+                }
+
+                const archive = await api.get(`/player/${encodeURIComponent(id)}/archive`, {
+                  params: {
+                    start: new Date(effectiveStartMs).toISOString(),
+                    end: new Date(effectiveEndMs).toISOString(),
+                    source: 'node'
+                  },
+                  signal: controller.signal
+                });
+
+                if (requestGeneration !== archiveSeekGeneration) {
+                  throw new DOMException('Archive seek superseded', 'AbortError');
+                }
+
+                return archive.data.archiveHls || archive.data.hls_url || archive.data.playback_url;
+              } catch (err: any) {
+                if (controller.signal.aborted || requestGeneration !== archiveSeekGeneration || err?.code === 'ERR_CANCELED') {
+                  throw new DOMException('Archive seek superseded', 'AbortError');
+                }
+                throw err;
               } finally {
-                archiveBuildLock = null;
-                archivePreparing.value = false;
+                if (requestGeneration === archiveSeekGeneration) {
+                  archiveSeekAbortController = null;
+                  archivePreparing.value = false;
+                }
               }
             },
             ranges: initialRanges,
-            loadRanges: async (_signal?: AbortSignal) => {
-              return loadArchiveRanges();
-            }
+            loadRanges: async (_signal?: AbortSignal) => loadArchiveRanges()
           },
           events: {
             load: async (fromMs: number, toMs: number, _signal?: AbortSignal) => {
@@ -421,7 +381,9 @@ async function createPlayer() {
             start: async (fromMs: number, toMs: number) => {
               const start = new Date(fromMs).toISOString();
               const end = new Date(toMs).toISOString();
-              const result = await api.get(`/player/${encodeURIComponent(id)}/export`, { params: { start, end, source: archiveSource.value } });
+              const result = await api.get(`/player/${encodeURIComponent(id)}/export`, {
+                params: { start, end, source: 'node' }
+              });
               const url = result.data.exportMp4 || result.data.url;
               if (url) window.open(url, '_blank', 'noopener,noreferrer');
             }
@@ -468,11 +430,6 @@ async function reloadPlayer() {
 }
 
 watch(cameraId, () => {
-  void reloadPlayer();
-});
-
-watch(archiveSource, () => {
-  if (!camera.value || loading.value) return;
   void reloadPlayer();
 });
 

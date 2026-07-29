@@ -4,13 +4,6 @@ import { query } from '../db.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { audit } from '../utils/audit.js';
-import {
-  discoverHikvisionChannels,
-  generateHikvisionChannels,
-  hikvisionRtspUrl,
-  type HikvisionChannel,
-  type HikvisionDevice
-} from '../services/hikvisionChannels.js';
 
 export const devicesRouter = Router();
 devicesRouter.use(requireAuth);
@@ -19,8 +12,7 @@ const nullableString = z.string().nullable().optional();
 
 const deviceSchema = z.object({
   name: z.string().min(1),
-  connection_type: z.enum(['RTSP', 'ONVIF', 'HIKVISION']).default('RTSP'),
-  archive_storage: z.enum(['node', 'device', 'both']).default('node'),
+  connection_type: z.enum(['RTSP', 'ONVIF']).default('RTSP'),
   dvr_server_id: z.string().uuid().nullable().optional(),
   host: nullableString,
   port: z.number().int().min(1).max(65535).nullable().optional(),
@@ -33,28 +25,10 @@ const deviceSchema = z.object({
 
 const deviceUpdateSchema = deviceSchema.partial().strict();
 
-const hikvisionChannelDiscoverySchema = z.object({
-  mode: z.enum(['auto', 'manual']).default('auto'),
-  first_channel: z.coerce.number().int().min(1).max(256).default(1),
-  last_channel: z.coerce.number().int().min(1).max(256).default(16)
-});
-
-const hikvisionChannelSchema = z.object({
-  channel: z.coerce.number().int().min(1).max(256),
-  track_id: z.string().regex(/^\d{3,4}$/),
-  name: z.string().min(1).optional(),
-  source_url: z.string().min(1).optional()
-});
-
-const hikvisionChannelSyncSchema = hikvisionChannelDiscoverySchema.extend({
-  channels: z.array(hikvisionChannelSchema).optional()
-});
-
 type DeviceRow = {
   id: string;
   name: string;
-  connection_type: string;
-  archive_storage: string;
+  connection_type: 'RTSP' | 'ONVIF';
   dvr_server_id: string | null;
   host: string | null;
   port: number | null;
@@ -71,12 +45,10 @@ type DeviceRow = {
   camera_count?: number;
 };
 
-function isConfigured(row: Pick<DeviceRow, 'name' | 'connection_type' | 'dvr_server_id' | 'host' | 'port' | 'username' | 'rtsp_url' | 'has_password'>): boolean {
+function isConfigured(row: Pick<DeviceRow, 'name' | 'connection_type' | 'dvr_server_id' | 'host' | 'port' | 'rtsp_url'>): boolean {
   if (!row.name || !row.connection_type || !row.dvr_server_id) return false;
   if (row.connection_type === 'RTSP') return Boolean(row.rtsp_url || row.host);
-  if (row.connection_type === 'ONVIF') return Boolean(row.host && row.port);
-  if (row.connection_type === 'HIKVISION') return Boolean(row.host && row.port && row.username && row.has_password);
-  return false;
+  return Boolean(row.host && row.port);
 }
 
 function publicDevice(row: DeviceRow) {
@@ -85,7 +57,8 @@ function publicDevice(row: DeviceRow) {
     ...safeRow,
     camera_count: Number(row.camera_count || 0),
     is_configured: isConfigured(row),
-    has_password: Boolean(has_password)
+    has_password: Boolean(has_password),
+    archive_storage: 'node'
   };
 }
 
@@ -119,62 +92,8 @@ async function queueDeviceCameraReload(
   return commands.rowCount || 0;
 }
 
-async function loadHikvisionDevice(id: string): Promise<HikvisionDevice & { dvr_server_id: string | null; archive_storage: string }> {
-  const result = await query<HikvisionDevice & { connection_type: string; dvr_server_id: string | null; archive_storage: string }>(
-    `SELECT id, name, connection_type, archive_storage, dvr_server_id, host, port, username, password, rtsp_url
-       FROM devices
-      WHERE id = $1`,
-    [id]
-  );
-  if (!result.rowCount) throw new Error('Device not found');
-  const device = result.rows[0];
-  if (device.connection_type !== 'HIKVISION') throw new Error('Device is not HIKVISION');
-  if (!device.host || !device.port || !device.username || !device.password) {
-    throw new Error('Hikvision Host/IP, port, login and password are required');
-  }
-  return device;
-}
-
-function trackIdFromSource(sourceUrl: string | null | undefined): string | null {
-  const match = String(sourceUrl || '').match(/\/Streaming\/(?:channels|tracks)\/(\d{3,4})/i);
-  return match ? match[1] : null;
-}
-
-async function annotateExistingChannels(deviceId: string, channels: HikvisionChannel[]) {
-  const existing = await query<{ id: string; name: string; stream_name: string; source_url: string }>(
-    `SELECT id, name, stream_name, source_url
-       FROM cameras
-      WHERE device_id = $1`,
-    [deviceId]
-  );
-  const byTrack = new Map<string, typeof existing.rows[number]>();
-  for (const camera of existing.rows) {
-    const track = trackIdFromSource(camera.source_url);
-    if (track) byTrack.set(track, camera);
-  }
-  return channels.map((channel) => {
-    const camera = byTrack.get(channel.track_id) || null;
-    return {
-      ...channel,
-      exists: Boolean(camera),
-      camera_id: camera?.id || null,
-      stream_name: camera?.stream_name || null
-    };
-  });
-}
-
-async function uniqueStreamName(base: string): Promise<string> {
-  const normalized = base.replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 48) || 'camera';
-  for (let index = 0; index < 100; index += 1) {
-    const value = index ? `${normalized}_${index}` : normalized;
-    const exists = await query<{ id: string }>('SELECT id FROM cameras WHERE stream_name = $1', [value]);
-    if (!exists.rowCount) return value;
-  }
-  return `${normalized}_${Date.now()}`;
-}
-
 const deviceSelect = `
-  d.id, d.name, d.connection_type, d.archive_storage, d.dvr_server_id, d.host, d.port,
+  d.id, d.name, d.connection_type, d.dvr_server_id, d.host, d.port,
   d.username, d.rtsp_url, d.comment, d.status, d.last_check_at,
   d.is_enabled, d.created_at, d.updated_at,
   (d.password IS NOT NULL AND d.password <> '') AS has_password,
@@ -208,7 +127,8 @@ devicesRouter.get('/:id', asyncHandler(async (req, res) => {
             c.onvif_xaddr, c.onvif_port, c.onvif_username, c.onvif_profile_token,
             c.onvif_device_info, c.onvif_last_sync_at,
             (c.onvif_xaddr IS NOT NULL) AS is_onvif,
-            d.archive_storage, d.dvr_server_id, node.name AS node_name
+            d.dvr_server_id, node.name AS node_name,
+            'node'::text AS archive_storage
        FROM cameras c
        JOIN devices d ON d.id = c.device_id
        LEFT JOIN dvr_servers node ON node.id = d.dvr_server_id
@@ -220,85 +140,6 @@ devicesRouter.get('/:id', asyncHandler(async (req, res) => {
   res.json({ item: publicDevice(result.rows[0]), cameras: cameras.rows });
 }));
 
-devicesRouter.post('/:id/hikvision/channels/discover', requireRole('super_admin', 'operator'), asyncHandler(async (req, res) => {
-  const body = hikvisionChannelDiscoverySchema.parse(req.body || {});
-  try {
-    const device = await loadHikvisionDevice(req.params.id);
-    const channels = body.mode === 'manual'
-      ? generateHikvisionChannels(device, body.first_channel, body.last_channel)
-      : await discoverHikvisionChannels(device);
-
-    await query('UPDATE devices SET status = $2, last_check_at = now() WHERE id = $1', [req.params.id, 'online']);
-    res.json({ items: await annotateExistingChannels(req.params.id, channels), mode: body.mode });
-  } catch (error) {
-    await query('UPDATE devices SET status = $2, last_check_at = now() WHERE id = $1', [req.params.id, 'error']).catch(() => undefined);
-    throw error;
-  }
-}));
-
-devicesRouter.post('/:id/hikvision/channels/sync', requireRole('super_admin', 'operator'), asyncHandler(async (req, res) => {
-  const body = hikvisionChannelSyncSchema.parse(req.body || {});
-  const device = await loadHikvisionDevice(req.params.id);
-  const requestedChannels = body.channels?.length
-    ? body.channels.map((channel): HikvisionChannel => ({
-        channel: channel.channel,
-        track_id: channel.track_id,
-        name: channel.name || `${device.name} channel ${channel.channel}`,
-        online: null,
-        enabled: true,
-        source_url: channel.source_url || hikvisionRtspUrl(device, channel.track_id),
-        discovered_by: body.mode === 'manual' ? 'manual' : 'input_proxy_status'
-      }))
-    : body.mode === 'manual'
-      ? generateHikvisionChannels(device, body.first_channel, body.last_channel)
-      : await discoverHikvisionChannels(device);
-
-  const channels = await annotateExistingChannels(req.params.id, requestedChannels);
-  const created: Array<{ id: string; track_id: string; stream_name: string }> = [];
-  const skipped = channels.filter((channel) => channel.exists).map((channel) => ({
-    track_id: channel.track_id,
-    camera_id: channel.camera_id,
-    stream_name: channel.stream_name
-  }));
-
-  for (const channel of channels) {
-    if (channel.exists) continue;
-    const streamName = await uniqueStreamName(`hik_${device.id.slice(0, 8)}_ch${channel.channel}`);
-    const result = await query<{ id: string }>(
-      `INSERT INTO cameras(
-         name, stream_name, source_url, dvr_server_id, device_id, archive_storage, retention_days, is_enabled
-       )
-       VALUES ($1,$2,$3,$4,$5,$6,$7,true)
-       RETURNING id`,
-      [
-        channel.name || `${device.name} channel ${channel.channel}`,
-        streamName,
-        channel.source_url || hikvisionRtspUrl(device, channel.track_id),
-        device.dvr_server_id,
-        device.id,
-        device.archive_storage || 'node',
-        7
-      ]
-    );
-    created.push({ id: result.rows[0].id, track_id: channel.track_id, stream_name: streamName });
-  }
-
-  const reloadCommands = created.length
-    ? await queueDeviceCameraReload([device.dvr_server_id], {
-        reason: 'hikvision_channels_created',
-        device_id: device.id,
-        camera_ids: created.map((camera) => camera.id)
-      })
-    : 0;
-  await query('UPDATE devices SET status = $2, last_check_at = now() WHERE id = $1', [req.params.id, 'online']);
-  await audit(req, 'device.hikvision_channels_sync', 'device', req.params.id, {
-    created: created.length,
-    skipped: skipped.length,
-    reload_commands: reloadCommands
-  });
-  res.json({ ok: true, created, skipped, reload_queued: reloadCommands > 0 });
-}));
-
 devicesRouter.post('/', requireRole('super_admin', 'operator'), asyncHandler(async (req, res) => {
   const body = deviceSchema.parse(req.body || {});
   const result = await query<{ id: string }>(
@@ -306,12 +147,11 @@ devicesRouter.post('/', requireRole('super_admin', 'operator'), asyncHandler(asy
        name, connection_type, archive_storage, dvr_server_id, host, port, username,
        password, rtsp_url, comment, status, is_enabled
      )
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'unknown',$11)
+     VALUES ($1,$2,'node',$3,$4,$5,$6,$7,$8,$9,'unknown',$10)
      RETURNING id`,
     [
       body.name,
       body.connection_type,
-      body.archive_storage,
       body.dvr_server_id ?? null,
       body.host ?? null,
       body.port ?? null,
@@ -346,10 +186,10 @@ devicesRouter.patch('/:id', requireRole('super_admin', 'operator'), asyncHandler
   );
 
   const sets = entries.map(([key], index) => `${key} = $${index + 2}`).join(', ');
-  await query(`UPDATE devices SET ${sets} WHERE id = $1`, [req.params.id, ...entries.map(([, value]) => value)]);
+  await query(`UPDATE devices SET ${sets}, archive_storage = 'node' WHERE id = $1`, [req.params.id, ...entries.map(([, value]) => value)]);
 
-  const current = await query<{ dvr_server_id: string | null; archive_storage: 'node' | 'device' | 'both' }>(
-    `SELECT dvr_server_id, archive_storage FROM devices WHERE id = $1`,
+  const current = await query<{ dvr_server_id: string | null }>(
+    `SELECT dvr_server_id FROM devices WHERE id = $1`,
     [req.params.id]
   );
   const placement = current.rows[0];
@@ -357,9 +197,9 @@ devicesRouter.patch('/:id', requireRole('super_admin', 'operator'), asyncHandler
   await query(
     `UPDATE cameras
         SET dvr_server_id = $2,
-            archive_storage = $3
+            archive_storage = 'node'
       WHERE device_id = $1`,
-    [req.params.id, placement.dvr_server_id, placement.archive_storage]
+    [req.params.id, placement.dvr_server_id]
   );
 
   const affectedNodeIds = [
@@ -371,8 +211,7 @@ devicesRouter.patch('/:id', requireRole('super_admin', 'operator'), asyncHandler
     reason: 'device_updated',
     device_id: req.params.id,
     fields: entries.map(([key]) => key),
-    inherited_node_id: placement.dvr_server_id,
-    inherited_archive_storage: placement.archive_storage
+    inherited_node_id: placement.dvr_server_id
   });
 
   await audit(req, 'device.update', 'device', req.params.id, {
