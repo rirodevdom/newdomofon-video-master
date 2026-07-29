@@ -18,7 +18,7 @@ install -d -m 0750 "$BACKUP_DIR"
 cp -a "$SITE_CONF" "$BACKUP_DIR/$(basename "$SITE_CONF").before"
 nginx -T >"$BACKUP_DIR/nginx-before.txt" 2>&1 || true
 
-log "Removing obsolete direct camera-to-node proxy routes"
+log "Installing node-only managed camera media route"
 python3 - "$SITE_CONF" <<'PY'
 from pathlib import Path
 import re
@@ -26,36 +26,29 @@ import sys
 
 path = Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
+start_marker = "# BEGIN NEWDOMOFON MANAGED CAMERA MEDIA GATEWAY"
+end_marker = "# END NEWDOMOFON MANAGED CAMERA MEDIA GATEWAY"
 
-managed_start = "# BEGIN NEWDOMOFON MANAGED CAMERA MEDIA GATEWAY"
-managed_end = "# END NEWDOMOFON MANAGED CAMERA MEDIA GATEWAY"
-
-# Remove only a previous managed gateway block. Keep the historical generated
-# wrapper because it may still contain working /files/ and /device-archive/
-# routes; the obsolete camera sub-location inside it is removed below.
 text = re.sub(
-    rf"\n?\s*{re.escape(managed_start)}\n[\s\S]*?\n\s*{re.escape(managed_end)}\n?",
+    rf"\n?\s*{re.escape(start_marker)}\n[\s\S]*?\n\s*{re.escape(end_marker)}\n?",
     "\n",
     text,
 )
 
-
-def iter_location_blocks(src: str):
-    pattern = re.compile(r"(^|\n)([ \t]*location\b[^\n{]*\{)", re.MULTILINE)
-    pos = 0
+# Remove obsolete vendor-archive locations left by older deployments.
+def remove_location(src: str, header_pattern: str) -> str:
+    pattern = re.compile(header_pattern, re.MULTILINE)
     while True:
-        match = pattern.search(src, pos)
+        match = pattern.search(src)
         if not match:
-            break
-        start = match.start(2)
-        brace = src.find("{", match.start(2), match.end(2) + 1)
+            return src
+        brace = src.find("{", match.start(), match.end() + 1)
         if brace < 0:
-            pos = match.end()
-            continue
+            return src
         depth = 0
-        i = brace
         quote = None
         escaped = False
+        i = brace
         while i < len(src):
             ch = src[i]
             if quote:
@@ -76,32 +69,54 @@ def iter_location_blocks(src: str):
                         i += 1
                         while i < len(src) and src[i] in " \t\r\n":
                             i += 1
-                        yield start, i, src[start:i]
-                        pos = i
+                        src = src[:match.start()] + src[i:]
                         break
             i += 1
         else:
-            break
+            return src
 
+text = remove_location(text, r"^\s*location\s+[^\n{]*/device-archive/[^\n{]*\{")
 
-# Remove any historical /cameras/ location that still proxies directly to a
-# DVR/node instead of the managed-token gateway on 127.0.0.1:3082.
+# Remove direct /cameras proxies that bypass managed-token validation.
+def location_blocks(src: str):
+    pattern = re.compile(r"(^|\n)([ \t]*location\b[^\n{]*\{)", re.MULTILINE)
+    pos = 0
+    while True:
+        match = pattern.search(src, pos)
+        if not match:
+            return
+        start = match.start(2)
+        brace = src.find("{", start, match.end(2) + 1)
+        depth = 0
+        i = brace
+        while i < len(src):
+            if src[i] == "{":
+                depth += 1
+            elif src[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    i += 1
+                    yield start, i, src[start:i]
+                    pos = i
+                    break
+            i += 1
+        else:
+            return
+
 remove_ranges = []
-for start, end, location_block in iter_location_blocks(text):
-    header = location_block.split("{", 1)[0]
+for start, end, block in location_blocks(text):
+    header = block.split("{", 1)[0]
     if "/cameras/" not in header:
         continue
-    proxy_targets = re.findall(r"proxy_pass\s+([^;]+);", location_block)
-    if proxy_targets and any("127.0.0.1:3082" not in target for target in proxy_targets):
+    targets = re.findall(r"proxy_pass\s+([^;]+);", block)
+    if targets and any("127.0.0.1:3082" not in target for target in targets):
         remove_ranges.append((start, end))
-
 for start, end in reversed(remove_ranges):
     text = text[:start] + text[end:]
 
 block = r'''    # BEGIN NEWDOMOFON MANAGED CAMERA MEDIA GATEWAY
-    # Camera media must pass through the master gateway. It validates external
-    # managed tokens (m1/mct1) and mints a short-lived node token internally.
-    location ~ ^/cameras/[^/]+/(?:.*\.(?:m3u8|mpd|ts|m4s|mp4|jpg|jpeg)|recording_status\.json|media_info\.json|events(?:\.json|/summary)?|events_summary\.json|motion_events\.json|archive/ranges|device-archive/session|device-archive/ranges)$ {
+    # Generic live, local node archive, events, previews and exports.
+    location ~ ^/cameras/[^/]+/(?:.*\.(?:m3u8|mpd|ts|m4s|mp4|jpg|jpeg)|recording_status\.json|media_info\.json|events(?:\.json|/summary)?|events_summary\.json|motion_events\.json|archive/ranges)$ {
         if ($request_method = OPTIONS) {
             add_header Access-Control-Allow-Origin "*" always;
             add_header Access-Control-Allow-Methods "GET,HEAD,OPTIONS" always;
@@ -109,12 +124,10 @@ block = r'''    # BEGIN NEWDOMOFON MANAGED CAMERA MEDIA GATEWAY
             add_header Access-Control-Max-Age "600" always;
             return 204;
         }
-
         add_header Access-Control-Allow-Origin "*" always;
         add_header Access-Control-Allow-Methods "GET,HEAD,OPTIONS" always;
         add_header Access-Control-Allow-Headers "authorization,content-type,range,cache-control,pragma,accept,origin,x-requested-with" always;
         add_header Access-Control-Expose-Headers "content-length,content-range,accept-ranges,cache-control,content-type,x-newdomofon-resolved-stream,x-newdomofon-smartyard-compat,x-newdomofon-smartyard-route" always;
-
         proxy_pass http://127.0.0.1:3082;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -130,15 +143,11 @@ block = r'''    # BEGIN NEWDOMOFON MANAGED CAMERA MEDIA GATEWAY
 
 '''
 
-# Regex locations are evaluated in declaration order. Insert this precise route
-# before every remaining regex location so no stale direct node route can win.
 match = re.search(r"(?m)^\s*location\s+~", text)
 if match:
     text = text[:match.start()] + block + text[match.start():]
 else:
-    marker = "    location /assets/ {"
-    if marker not in text:
-        marker = "    location / {"
+    marker = "    location /assets/ {" if "    location /assets/ {" in text else "    location / {"
     if marker not in text:
         raise SystemExit("Could not find an insertion point in nginx site config")
     text = text.replace(marker, block + marker, 1)
@@ -146,46 +155,21 @@ else:
 path.write_text(text, encoding="utf-8")
 PY
 
-log "Validating and reloading nginx"
 nginx -t
 systemctl reload nginx
 nginx -T >"$BACKUP_DIR/nginx-after.txt" 2>&1
 
-python3 - "$BACKUP_DIR/nginx-after.txt" <<'PY'
-from pathlib import Path
-import re
-import sys
+if grep -q '/device-archive/' "$BACKUP_DIR/nginx-after.txt"; then
+  fail "Obsolete /device-archive/ route is still present"
+fi
 
-text = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
-if "# BEGIN NEWDOMOFON MANAGED CAMERA MEDIA GATEWAY" not in text:
-    raise SystemExit("Managed camera media gateway marker was not found")
-
-managed_section = text.split("# BEGIN NEWDOMOFON MANAGED CAMERA MEDIA GATEWAY", 1)[1].split(
-    "# END NEWDOMOFON MANAGED CAMERA MEDIA GATEWAY", 1
-)[0]
-if "proxy_pass http://127.0.0.1:3082;" not in managed_section:
-    raise SystemExit("Managed /cameras/<stream>/ route is not using 127.0.0.1:3082")
-
-# A direct camera route to the node is the exact regression this repair removes.
-for match in re.finditer(r"location\b[^\n{]*/cameras/[^\n{]*\{", text):
-    start = match.start()
-    end = text.find("\n    }", start)
-    if end < 0:
-        end = min(len(text), start + 5000)
-    snippet = text[start:end]
-    targets = re.findall(r"proxy_pass\s+([^;]+);", snippet)
-    if targets and any("127.0.0.1:3082" not in target for target in targets):
-        raise SystemExit(f"Direct camera proxy still present: {targets}")
-PY
+grep -q 'proxy_pass http://127.0.0.1:3082;' "$BACKUP_DIR/nginx-after.txt" \
+  || fail "Managed camera route is not using port 3082"
 
 curl -fsS --max-time 3 http://127.0.0.1:3082/health >"$BACKUP_DIR/gateway-health.json" \
   || fail "Managed media gateway on port 3082 is unavailable"
 
-log "Managed camera media routing is active"
-grep -nE 'BEGIN NEWDOMOFON MANAGED CAMERA MEDIA GATEWAY|location.*cameras|proxy_pass.*(3010|3082)' \
-  "$BACKUP_DIR/nginx-after.txt" | head -120 || true
-
-echo
+log "Managed node-only media routing is active"
 cat "$BACKUP_DIR/gateway-health.json"
 echo
 log "Repair completed. Backup: $BACKUP_DIR"
