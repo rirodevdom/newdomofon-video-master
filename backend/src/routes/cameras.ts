@@ -47,7 +47,6 @@ const cameraEnabledSchema = z.object({
 type DevicePlacement = {
   id: string;
   dvr_server_id: string | null;
-  archive_storage: 'node' | 'device' | 'both';
 };
 
 function normalizeBody<T extends Record<string, unknown>>(body: T): T {
@@ -101,7 +100,7 @@ async function queueNodeCameraReload(
 
 async function loadDevicePlacement(deviceId: string): Promise<DevicePlacement | null> {
   const result = await query<DevicePlacement>(
-    `SELECT id, dvr_server_id, archive_storage
+    `SELECT id, dvr_server_id
        FROM devices
       WHERE id = $1
       LIMIT 1`,
@@ -112,7 +111,7 @@ async function loadDevicePlacement(deviceId: string): Promise<DevicePlacement | 
 
 const cameraSelect = `
   c.id, c.group_id, device.dvr_server_id AS dvr_server_id, c.device_id,
-  c.name, c.stream_name, c.source_url, device.archive_storage AS archive_storage,
+  c.name, c.stream_name, c.source_url, 'node'::text AS archive_storage,
   c.rtmp_push_url, c.latitude, c.longitude, c.direction_deg, c.fov_deg, c.retention_days,
   c.is_enabled, c.created_at, c.updated_at, c.onvif_xaddr, c.onvif_port, c.onvif_username,
   c.onvif_profile_token, c.onvif_device_info, c.onvif_last_sync_at,
@@ -123,7 +122,7 @@ camerasRouter.get('/', asyncHandler(async (req, res) => {
   const authReq = req as AuthRequest;
   const baseQuery = `SELECT ${cameraSelect}, cg.name AS group_name, node.name AS dvr_server_name,
                             device.name AS device_name, device.connection_type AS device_connection_type,
-                            device.archive_storage AS device_archive_storage,
+                            'node'::text AS device_archive_storage,
                             EXISTS(SELECT 1 FROM user_favorites f WHERE f.camera_id = c.id AND f.user_id = $1) AS favorite
                        FROM cameras c
                        JOIN devices device ON device.id = c.device_id
@@ -145,7 +144,7 @@ camerasRouter.get('/:id', asyncHandler(async (req, res) => {
   const result = await query(
     `SELECT ${cameraSelect},
             device.name AS device_name, device.connection_type AS device_connection_type,
-            device.archive_storage AS device_archive_storage, node.name AS dvr_server_name
+            'node'::text AS device_archive_storage, node.name AS dvr_server_name
        FROM cameras c
        JOIN devices device ON device.id = c.device_id
        LEFT JOIN dvr_servers node ON node.id = device.dvr_server_id
@@ -167,13 +166,13 @@ camerasRouter.post('/', requireRole('super_admin', 'operator'), asyncHandler(asy
        latitude, longitude, direction_deg, fov_deg, archive_storage, retention_days, is_enabled,
        onvif_xaddr, onvif_port, onvif_username, onvif_password, onvif_profile_token, onvif_device_info, onvif_last_sync_at
      )
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'node',$12,$13,$14,$15,$16,$17,$18,$19,$20)
      RETURNING id, dvr_server_id`,
     [
       body.name, body.stream_name, body.source_url, body.group_id ?? null,
       device.dvr_server_id, body.device_id, body.rtmp_push_url ?? null,
       body.latitude ?? null, body.longitude ?? null, body.direction_deg ?? null, body.fov_deg ?? null,
-      device.archive_storage, body.retention_days, body.is_enabled,
+      body.retention_days, body.is_enabled,
       body.onvif_xaddr ?? null, body.onvif_port ?? null, body.onvif_username ?? null,
       body.onvif_password ?? null, body.onvif_profile_token ?? null,
       body.onvif_device_info ?? null, body.onvif_last_sync_at ?? null
@@ -191,7 +190,6 @@ camerasRouter.post('/', requireRole('super_admin', 'operator'), asyncHandler(asy
     stream_name: body.stream_name,
     device_id: body.device_id,
     inherited_node_id: device.dvr_server_id,
-    inherited_archive_storage: device.archive_storage,
     type: body.onvif_xaddr ? 'onvif' : 'rtsp',
     reload_commands: reloadCommands
   });
@@ -208,11 +206,10 @@ async function updateCameraConfig(req: AuthRequest, res: any) {
     source_url: string;
     onvif_xaddr: string | null;
     dvr_server_id: string | null;
-    archive_storage: 'node' | 'device' | 'both';
     stream_name: string;
   }>(
     `SELECT c.id, c.device_id, c.source_url, c.onvif_xaddr,
-            device.dvr_server_id, device.archive_storage, c.stream_name
+            device.dvr_server_id, c.stream_name
        FROM cameras c
        JOIN devices device ON device.id = c.device_id
       WHERE c.id = $1`,
@@ -230,15 +227,15 @@ async function updateCameraConfig(req: AuthRequest, res: any) {
 
   const allowed = publicFields(body);
   const fields = Object.entries(allowed).filter(([, value]) => value !== undefined);
-  const sets = fields.map(([key], index) => `${key} = $${index + 4}`);
-  sets.push('dvr_server_id = $2', 'archive_storage = $3');
+  const sets = fields.map(([key], index) => `${key} = $${index + 3}`);
+  sets.push('dvr_server_id = $2', "archive_storage = 'node'");
 
   const updated = await query<{ stream_name: string }>(
     `UPDATE cameras
         SET ${sets.join(', ')}
       WHERE id = $1
       RETURNING stream_name`,
-    [req.params.id, existing.dvr_server_id, existing.archive_storage, ...fields.map(([, value]) => value)]
+    [req.params.id, existing.dvr_server_id, ...fields.map(([, value]) => value)]
   );
 
   const currentStreamName = updated.rows[0]?.stream_name || existing.stream_name;
@@ -253,7 +250,6 @@ async function updateCameraConfig(req: AuthRequest, res: any) {
   await audit(req, 'camera.config_update', 'camera', req.params.id, {
     device_id: existing.device_id,
     inherited_node_id: existing.dvr_server_id,
-    inherited_archive_storage: existing.archive_storage,
     fields: fields.map(([key]) => key),
     reload_commands: reloadCommands
   });
@@ -265,10 +261,9 @@ async function updateCameraEnabled(req: AuthRequest, res: any) {
   const existing = await query<{
     device_id: string;
     dvr_server_id: string | null;
-    archive_storage: 'node' | 'device' | 'both';
     stream_name: string;
   }>(
-    `SELECT c.device_id, device.dvr_server_id, device.archive_storage, c.stream_name
+    `SELECT c.device_id, device.dvr_server_id, c.stream_name
        FROM cameras c
        JOIN devices device ON device.id = c.device_id
       WHERE c.id = $1`,
@@ -281,9 +276,9 @@ async function updateCameraEnabled(req: AuthRequest, res: any) {
     `UPDATE cameras
         SET is_enabled = $2,
             dvr_server_id = $3,
-            archive_storage = $4
+            archive_storage = 'node'
       WHERE id = $1`,
-    [req.params.id, body.is_enabled, camera.dvr_server_id, camera.archive_storage]
+    [req.params.id, body.is_enabled, camera.dvr_server_id]
   );
 
   const reloadCommands = await queueNodeCameraReload([camera.dvr_server_id], {
