@@ -10,6 +10,12 @@ STILL_MARKER = "newdomofon-smartyard-still-preview"
 def replace_once(text: str, old: str, new: str, label: str) -> tuple[str, bool]:
     if new in text:
         return text, False
+    # Other runtime preparation patches may extend the already-installed header
+    # block between repeated clean-install passes. The stable marker proves that
+    # the still-preview response patch is present even when the exact multiline
+    # replacement string is no longer byte-identical.
+    if label == "still preview response marker" and "x-newdomofon-preview-mode" in text:
+        return text, False
     if old not in text:
         raise RuntimeError(f"{label} anchor was not found")
     return text.replace(old, new, 1), True

@@ -7,6 +7,7 @@ import re
 
 
 LOCATION_START = re.compile(r"(?m)^\s*location\s+[^\n{]+\{")
+API_LOCATION_RE = re.compile(r"(?m)^(\s*)location\s+(?:\^~\s+)?/api/\s*\{")
 ALLOW_HEADERS_RE = re.compile(r"^(\s*)add_header\s+Access-Control-Allow-Headers\s+[^;]+;\s*$")
 ALLOW_ORIGIN_RE = re.compile(r"^(\s*)add_header\s+Access-Control-Allow-Origin\s+[^;]+;\s*$")
 PRIVATE_NETWORK_RE = re.compile(r"^\s*add_header\s+Access-Control-Allow-Private-Network\s+[^;]+;\s*$")
@@ -44,6 +45,19 @@ def find_media_location(text: str) -> tuple[int, int, str]:
         ):
             return match.start(), end, block
     raise RuntimeError("public SmartYard media location proxied to 127.0.0.1:3082 was not found")
+
+
+def normalize_api_location(text: str) -> str:
+    matches = list(API_LOCATION_RE.finditer(text))
+    if len(matches) != 1:
+        raise RuntimeError(
+            "Nginx config must contain exactly one /api/ location, "
+            f"found {len(matches)}"
+        )
+
+    match = matches[0]
+    canonical = f"{match.group(1)}location ^~ /api/ {{"
+    return text[:match.start()] + canonical + text[match.end():]
 
 
 def normalize_media_block(block: str) -> str:
@@ -135,12 +149,13 @@ def normalize_media_block(block: str) -> str:
 
 
 def normalize_file(path: Path) -> bool:
-    text = path.read_text(encoding="utf-8")
-    start, end, block = find_media_location(text)
-    normalized = normalize_media_block(block)
-    if normalized == block:
+    original = path.read_text(encoding="utf-8")
+    start, end, block = find_media_location(original)
+    text = original[:start] + normalize_media_block(block) + original[end:]
+    text = normalize_api_location(text)
+    if text == original:
         return False
-    path.write_text(text[:start] + normalized + text[end:], encoding="utf-8")
+    path.write_text(text, encoding="utf-8")
     return True
 
 
@@ -154,7 +169,7 @@ def main() -> int:
         raise SystemExit(f"Nginx config not found: {path}")
 
     changed = normalize_file(path)
-    print(f"SmartYard media CORS normalized: {path}")
+    print(f"SmartYard media CORS and API routing normalized: {path}")
     print(f"changed={'true' if changed else 'false'}")
     return 0
 
