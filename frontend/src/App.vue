@@ -7,6 +7,7 @@
         <v-list-item prepend-icon="mdi-view-dashboard" title="Дашборд" to="/" />
         <v-list-item prepend-icon="mdi-devices" title="Устройства" to="/devices" />
         <v-list-item prepend-icon="mdi-cctv" title="Камеры" to="/cameras" />
+        <v-list-item prepend-icon="mdi-video-wireless" title="Hikvision-каналы" to="/hikvision" />
         <v-list-item prepend-icon="mdi-server-network" title="Ноды" to="/nodes" />
         <v-list-item v-if="auth.user?.role === 'super_admin'" prepend-icon="mdi-shield-account" title="Администрирование" to="/admin" />
       </v-list>
