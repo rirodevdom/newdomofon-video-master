@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { Readable } from 'node:stream';
-import { Router, type Request, type Response } from 'express';
+import { Router, type Request, type Response as ExpressResponse } from 'express';
 import { z } from 'zod';
 import { config } from '../config.js';
 import { query } from '../db.js';
@@ -168,7 +168,7 @@ async function fetchNodeMedia(
   params: Record<string, string> = {},
   timeoutMs = 60_000,
   token = signMediaToken(channel.node_media_secret, channel.channel_external_id, [scope])
-): Promise<Response> {
+): Promise<globalThis.Response> {
   requirePlayable(channel);
   const candidates = nodeBaseCandidates(channel);
   if (!candidates.length) {
@@ -247,7 +247,7 @@ function requestedScope(suffix: string): MediaScope | null {
   return null;
 }
 
-function copyProxyHeaders(response: Response, res: Response): void {
+function copyProxyHeaders(response: globalThis.Response, res: ExpressResponse): void {
   for (const header of [
     'content-type', 'content-length', 'content-range', 'accept-ranges',
     'cache-control', 'etag', 'last-modified', 'content-disposition'
@@ -258,7 +258,7 @@ function copyProxyHeaders(response: Response, res: Response): void {
   res.setHeader('x-newdomofon-hikvision-media-proxy', 'master');
 }
 
-function streamProxyResponse(response: Response, res: Response): void {
+function streamProxyResponse(response: globalThis.Response, res: ExpressResponse): void {
   res.status(response.status);
   copyProxyHeaders(response, res);
   if (!response.body) {
@@ -277,7 +277,7 @@ function streamProxyResponse(response: Response, res: Response): void {
 // an http:// private-node URL, so HTTPS pages do not trigger mixed-content
 // blocking. Relative HLS segment paths remain valid because this route mirrors
 // the Hikvision-node media path structure.
-hikvisionMediaProxyRouter.get(/^\/channels\/([^/]+)\/(.+)$/, asyncHandler(async (req: Request, res: Response) => {
+hikvisionMediaProxyRouter.get(/^\/channels\/([^/]+)\/(.+)$/, asyncHandler(async (req: Request, res: ExpressResponse) => {
   const channelId = decodeURIComponent(String(req.params[0] || ''));
   const suffix = decodeURIComponent(String(req.params[1] || ''));
   if (!channelId || !suffix || suffix.includes('..') || suffix.includes('\\') || suffix.includes('\0')) {
