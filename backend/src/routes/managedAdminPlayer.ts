@@ -4,6 +4,7 @@ import { query } from '../db.js';
 import { requireAuth } from '../middleware/auth.js';
 import { canAccessCamera } from '../services/cameraAccess.js';
 import { signManagedCameraToken } from '../services/managedCameraToken.js';
+import { decryptManualManagedCameraToken } from '../services/manualManagedCameraToken.js';
 import type { AuthRequest } from '../types.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 
@@ -14,26 +15,21 @@ const SYSTEM_MANAGED_TOKEN_ID = '00000000-0000-4000-8000-000000000001';
 const archiveSchema = z.object({
   start: z.string().datetime(),
   end: z.string().datetime(),
-  source: z.enum(['auto', 'node', 'device']).optional()
+  source: z.enum(['auto', 'node']).optional()
 });
 
 type ManagedPlayerRow = {
   camera_id: string;
   camera_name: string;
   stream_name: string;
-  archive_storage: 'node' | 'device' | 'both';
-  device_archive_storage: 'node' | 'device' | 'both' | null;
   token_id: string;
   token_name: string;
+  token_mode: 'generated' | 'manual';
+  token_manual_ciphertext: string | null;
   token_generation: number;
   token_expires_at: string | null;
   assignment_created_at: string;
 };
-
-function effectiveArchiveStorage(row: ManagedPlayerRow): 'node' | 'device' | 'both' {
-  if (row.device_archive_storage === 'both') return 'both';
-  return row.archive_storage || row.device_archive_storage || 'node';
-}
 
 function cameraGatewayBase(raw: unknown): string {
   const configured = String(raw || '').trim().replace(/\/+$/, '');
@@ -42,9 +38,6 @@ function cameraGatewayBase(raw: unknown): string {
 }
 
 function publicCameraBase(req: AuthRequest): string {
-  // The authenticated admin player belongs to the video-master web application.
-  // Do not let a separately configured SmartYard/RBT integration origin redirect
-  // live and archive requests away from the video master.
   const applicationBase = cameraGatewayBase(
     process.env.APP_PUBLIC_URL ||
     process.env.APP_PUBLIC_BASE_URL ||
@@ -53,8 +46,6 @@ function publicCameraBase(req: AuthRequest): string {
   );
   if (applicationBase) return applicationBase;
 
-  // Retain SMARTYARD_PUBLIC_BASE_URL as a compatibility fallback for older
-  // installations which do not yet define APP_PUBLIC_URL.
   const smartYardBase = cameraGatewayBase(process.env.SMARTYARD_PUBLIC_BASE_URL || '');
   if (smartYardBase) return smartYardBase;
 
@@ -68,15 +59,14 @@ async function loadManagedPlayerAccess(cameraId: string): Promise<ManagedPlayerR
     `SELECT c.id AS camera_id,
             c.name AS camera_name,
             c.stream_name,
-            c.archive_storage,
-            device.archive_storage AS device_archive_storage,
             token.id AS token_id,
             token.name AS token_name,
+            token.token_mode AS token_mode,
+            token.manual_token_ciphertext AS token_manual_ciphertext,
             token.generation AS token_generation,
             token.expires_at AS token_expires_at,
             assignment.created_at AS assignment_created_at
        FROM cameras c
-       JOIN devices device ON device.id = c.device_id
        JOIN managed_camera_token_cameras assignment ON assignment.camera_id = c.id
        JOIN managed_camera_tokens token ON token.id = assignment.token_id
       WHERE c.id = $1
@@ -104,6 +94,12 @@ function managedTokenMetadata(row: ManagedPlayerRow) {
   };
 }
 
+function rawManagedPlayerToken(row: ManagedPlayerRow): string {
+  return row.token_mode === 'manual'
+    ? decryptManualManagedCameraToken(String(row.token_manual_ciphertext || ''))
+    : signManagedCameraToken(row.token_id, Number(row.token_generation));
+}
+
 managedAdminPlayerRouter.use(requireAuth);
 
 managedAdminPlayerRouter.get('/:cameraId/live', asyncHandler(async (req, res) => {
@@ -123,7 +119,7 @@ managedAdminPlayerRouter.get('/:cameraId/live', asyncHandler(async (req, res) =>
   const cameraBase = publicCameraBase(authReq);
   if (!cameraBase) return res.status(500).json({ error: 'Публичный адрес media gateway не определён' });
 
-  const rawToken = signManagedCameraToken(access.token_id, Number(access.token_generation));
+  const rawToken = rawManagedPlayerToken(access);
   const liveUrl = `${cameraBase}/${encodeURIComponent(access.stream_name)}/live.m3u8?token=${encodeURIComponent(rawToken)}`;
 
   res.setHeader('cache-control', 'no-store');
@@ -138,7 +134,7 @@ managedAdminPlayerRouter.get('/:cameraId/live', asyncHandler(async (req, res) =>
   });
 }));
 
-managedAdminPlayerRouter.get('/:cameraId/archive', asyncHandler(async (req, res, next) => {
+managedAdminPlayerRouter.get('/:cameraId/archive', asyncHandler(async (req, res) => {
   const authReq = req as AuthRequest;
   if (!authReq.user) return res.status(401).json({ error: 'Unauthorized' });
 
@@ -153,20 +149,10 @@ managedAdminPlayerRouter.get('/:cameraId/archive', asyncHandler(async (req, res,
     });
   }
 
-  const storage = effectiveArchiveStorage(access);
-  const requestedSource = params.source || 'auto';
-
-  // Device archive and automatic selection for dual storage keep using the
-  // existing authenticated proxy because it prepares temporary Hikvision/NVR
-  // sessions. Node archive can safely use the same managed token as live.
-  if (requestedSource === 'device' || storage === 'device' || (requestedSource === 'auto' && storage === 'both')) {
-    return next();
-  }
-
   const cameraBase = publicCameraBase(authReq);
   if (!cameraBase) return res.status(500).json({ error: 'Публичный адрес media gateway не определён' });
 
-  const rawToken = signManagedCameraToken(access.token_id, Number(access.token_generation));
+  const rawToken = rawManagedPlayerToken(access);
   const queryString = new URLSearchParams({
     start: params.start,
     end: params.end,
@@ -181,9 +167,9 @@ managedAdminPlayerRouter.get('/:cameraId/archive', asyncHandler(async (req, res,
     playback_url: archiveUrl,
     stream_name: access.stream_name,
     source: 'node',
-    requested_source: requestedSource,
-    archive_storage: storage,
-    available_sources: storage === 'both' ? ['node', 'device'] : [storage],
+    requested_source: params.source || 'node',
+    archive_storage: 'node',
+    available_sources: ['node'],
     token_mode: 'managed-camera',
     managed_token: managedTokenMetadata(access),
     expiresIn: null
