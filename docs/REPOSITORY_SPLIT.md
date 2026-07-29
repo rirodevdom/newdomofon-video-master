@@ -1,169 +1,89 @@
-# Разделение NewDomofon Video на master и node
+# Границы репозиториев NewDomofon Video
 
-## Цель
+## Текущие проекты
 
-Исходный монорепозиторий разделяется на два независимо развиваемых проекта:
+- `newdomofon-video-master` — control plane, PostgreSQL, RBAC, устройства, камеры, node registry, managed tokens и внешние gateways;
+- `newdomofon-video-node` — универсальная RTSP/ONVIF data plane: FFmpeg recording, live, локальный архив, ranges, export и события;
+- будущий отдельный репозиторий Hikvision-node — единственное место для Hikvision ISAPI и vendor-specific операций.
 
-- `newdomofon-video-master` — управление, пользователи, RBAC, устройства, камеры, назначение камер нодам, центральные события, выдача playback URL и управление нодами;
-- `newdomofon-video-node` — локальная запись, локальный архив, live/archive/export, ONVIF/Hikvision-сборщики, локальные очереди и локальное состояние ноды.
+Проекты не импортируют исходный код друг друга. Связь выполняется только через версионируемые HTTP-контракты.
 
-Проекты не должны импортировать исходный код друг друга. Единственная обязательная связь между ними — версионируемый HTTP API из `contracts/node-agent-api-v1.md`.
-
-## Граница ответственности
-
-### Master
+## Master
 
 Master владеет:
 
 - пользователями, ролями и доступом к камерам;
 - устройствами и камерами как объектами управления;
-- реестром нод и их состоянием;
-- назначением камер конкретным нодам;
-- выпуском и отзывом учетных данных ноды;
-- активацией/деактивацией ноды;
-- выпуском короткоживущих playback-токенов;
-- центральным индексом событий и аудитом;
-- веб-интерфейсом администратора и пользователя.
+- реестром node и их состоянием;
+- назначением устройств и камер обычным video node;
+- managed tokens;
+- media/events/preview gateways;
+- веб-интерфейсом и аудитом.
 
 Master не должен:
 
-- запускать FFmpeg для камер, назначенных удаленной ноде;
-- читать локальные файлы архива ноды;
-- иметь прямой доступ к локальной базе или файловой системе ноды.
+- запускать FFmpeg recorder;
+- обращаться к vendor-specific API камер/NVR;
+- выполнять поиск каналов или записей на устройстве;
+- хранить логические сессии vendor archive playback;
+- читать файловую систему node.
 
-### Node
+## Универсальная video node
 
-Node владеет:
+Обычная video node владеет:
 
-- локальным durable-состоянием полученной конфигурации камер;
 - FFmpeg-процессами и перезапуском рекордеров;
+- RTSP source consumption;
+- ONVIF discovery/profile lookup/PullPoint events;
 - локальным архивом и retention;
-- live/archive/export HTTP API;
-- локальным сбором ONVIF/Hikvision-событий;
-- локальной очередью событий и результатов команд до синхронизации;
-- локальной диагностикой дисков, потоков и камер.
+- live/archive/ranges/export HTTP API;
+- локальной SQLite событий;
+- диагностикой дисков, потоков и камер.
 
-Node не должна:
+Обычная video node не содержит Hikvision ISAPI, `alertStream`, ContentMgmt search, vendor-specific channel discovery или playback архива устройства.
 
-- самостоятельно создавать пользователей или изменять RBAC master;
-- самостоятельно назначать себе камеры;
-- считать наличие старого конфигурационного кеша разрешением на бессрочную работу.
+## Будущая Hikvision-node
 
-## Активация ноды
+Отдельная Hikvision-node будет владеть:
 
-Самостоятельность ноды означает, что после получения конфигурации она не зависит от базы данных или файлов master. При этом право работать выдается только master.
+- учётными данными и соединениями с Hikvision ISAPI;
+- discovery каналов/треков;
+- `alertStream` и vendor-specific событиями;
+- поиском записей на NVR;
+- подготовкой и обслуживанием временных playback-сессий архива устройства;
+- нормализацией vendor-specific ответов в отдельный контракт master.
 
-Нужна lease-модель:
+Она не должна встраиваться обратно в generic video node. Master должен видеть её как отдельный тип сервиса/node с отдельными capabilities и API contract.
 
-1. Node запускается в состоянии `inactive`.
-2. Node проходит аутентифицированный heartbeat к master.
-3. Master отвечает `active=true` и выдает ограниченный по времени activation lease.
-4. Пока lease действителен, node может записывать, отдавать media API и собирать события локально.
-5. При кратковременном обрыве связи node переходит в `degraded`, но работает до окончания lease.
-6. После окончания lease node переходит в `inactive`, останавливает рекордеры и возвращает `503 Node inactive` на media API.
-7. После восстановления связи и нового разрешения master node активируется и продолжает работу из локального состояния.
-8. Если master отключил ноду или отозвал token, новый lease не выдается; node деактивируется не позднее окончания текущего lease.
+## Контракты
 
-Рекомендуемое значение lease для production: 60–120 секунд. Значение должно задаваться master и иметь верхний предел на node.
+Текущий generic node-agent API остаётся `/api/node-agent/...` и передаёт только данные, необходимые RTSP/ONVIF DVR-node. Vendor credentials и параметры архива устройства в generic контракт не входят.
 
-## Состояния node
+Для Hikvision-node нужен новый major contract, например:
 
-- `inactive` — нет действующего lease; запись и media API запрещены;
-- `connecting` — выполняется первичная авторизация;
-- `active` — master доступен, lease действителен;
-- `degraded` — master временно недоступен, но lease еще действителен;
-- `revoked` — master явно отклонил учетные данные или отключил ноду.
+```text
+/api/hikvision-node/v1/heartbeat
+/api/hikvision-node/v1/config
+/api/hikvision-node/v1/events
+/api/hikvision-node/v1/archive/ranges
+/api/hikvision-node/v1/archive/session
+```
 
-`/health` должен показывать техническое состояние процесса отдельно от активации. Например, HTTP 200 может означать, что процесс жив, но поле `activation.active=false` показывает, что нода не обслуживает камеры.
+Названия приведены как архитектурная заготовка; окончательный контракт проектируется в будущем репозитории до реализации runtime.
 
-## Состав будущих репозиториев
+## Порядок обновления существующих серверов
 
-### newdomofon-video-master
-
-Основные каталоги:
-
-- `backend/`
-- `frontend/`
-- `public-events-proxy/`
-- `media-public-proxy/`
-- `smartyard-compat-proxy/`
-- `archive-policy-api/`
-- master-часть `deploy/` и `scripts/`
-- `contracts/`
-
-### newdomofon-video-node
-
-Основные каталоги:
-
-- `dvr-engine/`
-- `dvr-archive-proxy/`
-- `restreamer/`
-- `restream-gateway/`
-- `live-only-engine/`
-- node-часть `deploy/` и `scripts/`
-- `contracts/`
-
-## Версионирование контракта
-
-- URL текущего API пока сохраняются совместимыми: `/api/node-agent/...`.
-- Каждый запрос node должен отправлять `X-Node-Protocol-Version: 1`.
-- Master должен возвращать `protocol_version`.
-- Несовместимое изменение создает новый major contract, например v2.
-- Новые необязательные поля разрешено добавлять в рамках v1.
-- Удалять или менять смысл существующих полей в рамках v1 нельзя.
-
-## Порядок миграции работающих серверов
-
-Сейчас уже работают один master и одна node, поэтому разделение выполняется без одновременной замены обоих серверов.
-
-1. Создать два репозитория скриптом `scripts/split-independent-repositories.sh`.
-2. Зафиксировать одинаковую версию контракта v1 в обоих репозиториях.
-3. Сначала развернуть обратно совместимую версию master. Старый node продолжает работать по существующим endpoint.
-4. Перевести node на новый репозиторий, сохранив:
-   - `/etc/newdomofon-video/app.env`;
-   - `/var/lib/newdomofon-video/dvr`;
-   - node ID, agent token и media secret;
-   - systemd/nginx-настройки и DNS.
-5. Проверить heartbeat, config generation, число рекордеров, live, archive и события.
-6. Только после подтверждения работы включить activation lease enforcement.
-7. После периода наблюдения удалить node-код из master-репозитория и master-код из node-репозитория, если они еще остались в переходных ветках.
+1. Обновить все обычные video node до версии без Hikvision runtime.
+2. Убедиться, что RTSP recorders, live, локальный архив, ranges, export и ONVIF events работают.
+3. Обновить master.
+4. Миграция master переводит прежние устройства типа `HIKVISION` в `RTSP`, сохраняя камеры и `source_url`.
+5. Миграция принудительно оставляет архив `node` и удаляет только производные таблицы ISAPI-индекса.
+6. До появления отдельной Hikvision-node функции поиска каналов, vendor events и архива устройства недоступны.
 
 ## Правила дальнейшей разработки
 
-- Изменения только внутри master не требуют release node.
-- Изменения только внутри node не требуют release master.
-- Изменение HTTP-контракта сначала вносится в `contracts/`, затем master получает поддержку нового поля/версии, после этого обновляется node.
-- Master должен поддерживать предыдущую protocol major-версию на время поэтапного обновления нод.
-- Node должна игнорировать неизвестные дополнительные поля ответа.
+- Изменения master не требуют release generic node, пока не меняется контракт.
+- Изменения generic node не требуют release master, пока контракт совместим.
+- Hikvision-specific код принимается только в будущем специализированном репозитории.
+- Новый контракт сначала фиксируется документально, затем поддерживается master, после чего реализуется соответствующей node.
 - Секреты и runtime-данные никогда не переносятся через Git.
-
-## Создание двух репозиториев
-
-Установить `git-filter-repo`, перейти в рабочую копию этой ветки и выполнить:
-
-```bash
-sudo apt-get update
-sudo apt-get install -y git-filter-repo
-
-cd /opt/newdomofon-video
-bash scripts/split-independent-repositories.sh \
-  /opt/newdomofon-video-split
-```
-
-Будут созданы:
-
-```text
-/opt/newdomofon-video-split/newdomofon-video-master
-/opt/newdomofon-video-split/newdomofon-video-node
-```
-
-Для автоматической настройки remote и отправки:
-
-```bash
-MASTER_REMOTE='git@github.com:rirodevdom/newdomofon-video-master.git' \
-NODE_REMOTE='git@github.com:rirodevdom/newdomofon-video-node.git' \
-PUSH=1 \
-bash scripts/split-independent-repositories.sh /opt/newdomofon-video-split
-```
-
-Пустые GitHub-репозитории должны существовать до запуска с `PUSH=1`.
