@@ -3,6 +3,8 @@ name: Apply Hikvision node integration
 on:
   push:
     branches: ['agent/hikvision-node-integration']
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: write
