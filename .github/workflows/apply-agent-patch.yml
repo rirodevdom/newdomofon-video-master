@@ -24,7 +24,12 @@ jobs:
             .github/patch-parts/01
             .github/patch-parts/02a0
             .github/patch-parts/02a10
-            .github/patch-parts/02a11
+            .github/patch-parts/02a110
+            .github/patch-parts/02a111
+            .github/patch-parts/02a112
+            .github/patch-parts/02a113
+            .github/patch-parts/02a114
+            .github/patch-parts/02a115
             .github/patch-parts/02b
             .github/patch-parts/03
             .github/patch-parts/04
