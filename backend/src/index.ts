@@ -12,6 +12,7 @@ import { cameraGroupsRouter } from './routes/cameraGroups.js';
 import { camerasRouter } from './routes/cameras.js';
 import { favoritesRouter } from './routes/favorites.js';
 import { playerPublicArchiveRouter, playerRouter } from './routes/player.js';
+import { hikvisionPlayerRouter } from './routes/hikvisionPlayer.js';
 import { managedAdminPlayerRouter } from './routes/managedAdminPlayer.js';
 import { mediaRouter } from './routes/media.js';
 import { auditRouter } from './routes/audit.js';
@@ -86,6 +87,7 @@ app.use('/api/tokens/smartyard-links', smartYardLinksRouter);
 app.use('/api/tokens', tokensRouter);
 app.use('/api/camera-groups', cameraGroupsRouter);
 app.use('/api/cameras', camerasRouter);
+app.use('/api/hikvision-player', hikvisionPlayerRouter);
 // Public HLS archive proxy must be mounted before any broad /api router
 // that installs requireAuth, especially eventsRouter mounted at /api.
 app.use('/api/player', playerPublicArchiveRouter);
