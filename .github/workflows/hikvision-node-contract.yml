@@ -2,7 +2,7 @@ name: Hikvision node contract
 
 on:
   push:
-    branches: [main, 'agent/hikvision-node-integration']
+    branches: [main, 'agent/hikvision-node-integration', 'agent/hikvision-master-media-proxy']
   pull_request:
 
 jobs:
@@ -22,6 +22,11 @@ jobs:
           grep -q "node_kind" backend/src/routes/dvrServers.ts
           grep -q "Hikvision node" frontend/src/views/NodesView.vue
           grep -q "Каналы синхронизируются автоматически" frontend/src/views/DevicesView.vue
+          grep -q "hikvisionMediaProxyRouter" backend/src/routes/hikvisionPlayer.ts
+          grep -q "/api/hikvision-media" backend/src/routes/hikvisionPlayer.ts
+          grep -q "master-https-proxy" backend/src/routes/hikvisionPlayer.ts
+          ! grep -q "directMediaUrl" backend/src/routes/hikvisionPlayer.ts
+          ! grep -q "absoluteNodeUrl" backend/src/routes/hikvisionPlayer.ts
           ! grep -RIn "fetch(.*ISAPI\|/ISAPI/" backend/src --include='*.ts'
       - name: Build backend
         working-directory: backend
