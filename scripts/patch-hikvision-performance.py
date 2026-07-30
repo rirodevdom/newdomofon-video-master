@@ -22,8 +22,7 @@ def patch_backend(path: Path) -> None:
         "const ARCHIVE_RANGE_CHUNK_MS = 24 * 60 * 60 * 1000;\nconst ARCHIVE_RANGE_MERGE_GAP_MS = 2000;\nconst ARCHIVE_RANGE_CONCURRENCY = 2;\nconst ARCHIVE_RANGE_CACHE_MS = 30_000;",
         "archive performance constants",
     )
-    marker = "type ArchiveRangeRequestResult"
-    if marker not in text:
+    if "type ArchiveRangeRequestResult" not in text:
         insertion = '''type ArchiveRangeRequestResult = {\n  items: ArchiveRangeItem[];\n  chunksAttempted: number;\n  chunksSucceeded: number;\n  chunksNotFound: number;\n};\n\nconst archiveRangeRequests = new Map<string, { expiresAt: number; promise: Promise<ArchiveRangeRequestResult> }>();\n\n'''
         text = text.replace("function normalizeNodeBaseUrl", insertion + "function normalizeNodeBaseUrl", 1)
 
@@ -136,8 +135,12 @@ function loadArchiveRangesCached(channel: HikvisionChannelRow, start: Date, end:
   return promise;
 }'''
     text = replace_once(text, old, new, "parallel cached archive ranges")
-    text = replace_once(text, "  const result = await loadArchiveRangesChunked(channel, start, end);", "  const result = await loadArchiveRangesCached(channel, start, end);", "use archive range cache")
-    text = replace_once(text, "  res.setHeader('cache-control', 'no-store');", "  res.setHeader('cache-control', 'private, max-age=15');", "archive response cache header")
+    text = replace_once(
+        text,
+        "  const result = await loadArchiveRangesChunked(channel, start, end);\n  res.setHeader('cache-control', 'no-store');",
+        "  const result = await loadArchiveRangesCached(channel, start, end);\n  res.setHeader('cache-control', 'private, max-age=15');",
+        "cached archive range route",
+    )
     path.write_text(text, encoding="utf-8")
 
 
