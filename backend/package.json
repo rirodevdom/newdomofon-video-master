@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "prebuild": "python3 ../scripts/remove-hikvision-runtime.py && python3 ../scripts/patch-hikvision-device-settings.py --project-dir ..",
+    "prebuild": "python3 ../scripts/remove-hikvision-runtime.py && python3 ../scripts/patch-hikvision-device-settings.py --project-dir .. && python3 ../scripts/patch-hikvision-hls-proxy.py --project-dir ..",
     "build": "tsc",
     "start": "node dist/index.js",
     "migrate": "tsx src/migrate.ts",
