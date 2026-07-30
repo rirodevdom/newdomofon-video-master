@@ -16,12 +16,14 @@ SYSTEM_TOKEN_UI_PATCH="$PROJECT_DIR/scripts/patch-system-managed-token-ui.py"
 AUTO_ASSIGN_ALL_UI_PATCH="$PROJECT_DIR/scripts/patch-auto-assign-all-cameras-ui.py"
 CAMERA_DEVICE_UI_PATCH="$PROJECT_DIR/scripts/patch-camera-device-ui.py"
 CAMERA_TOKEN_WORKFLOW_PATCH="$PROJECT_DIR/scripts/patch-camera-token-workflow.py"
+HIKVISION_DEVICE_SETTINGS_PATCH="$PROJECT_DIR/scripts/patch-hikvision-device-settings.py"
 
 require_file "$MANUAL_AUTO_PATCH"
 require_file "$SYSTEM_TOKEN_UI_PATCH"
 require_file "$AUTO_ASSIGN_ALL_UI_PATCH"
 require_file "$CAMERA_DEVICE_UI_PATCH"
 require_file "$CAMERA_TOKEN_WORKFLOW_PATCH"
+require_file "$HIKVISION_DEVICE_SETTINGS_PATCH"
 require_file "$PROJECT_DIR/frontend/src/components/CameraTokenLinksPanel.vue"
 
 python3 -m py_compile \
@@ -29,7 +31,8 @@ python3 -m py_compile \
   "$SYSTEM_TOKEN_UI_PATCH" \
   "$AUTO_ASSIGN_ALL_UI_PATCH" \
   "$CAMERA_DEVICE_UI_PATCH" \
-  "$CAMERA_TOKEN_WORKFLOW_PATCH"
+  "$CAMERA_TOKEN_WORKFLOW_PATCH" \
+  "$HIKVISION_DEVICE_SETTINGS_PATCH"
 
 # The historical managed-token implementation is still materialized by
 # idempotent source patchers. Run every UI-related patch in dependency order so
@@ -39,6 +42,7 @@ python3 "$SYSTEM_TOKEN_UI_PATCH" --project-dir "$PROJECT_DIR"
 python3 "$AUTO_ASSIGN_ALL_UI_PATCH" --project-dir "$PROJECT_DIR"
 python3 "$CAMERA_DEVICE_UI_PATCH" --project-dir "$PROJECT_DIR"
 python3 "$CAMERA_TOKEN_WORKFLOW_PATCH" --project-dir "$PROJECT_DIR"
+python3 "$HIKVISION_DEVICE_SETTINGS_PATCH" --project-dir "$PROJECT_DIR"
 
 ADMIN_VIEW="$PROJECT_DIR/frontend/src/views/AdminView.vue"
 CAMERAS_VIEW="$PROJECT_DIR/frontend/src/views/CamerasView.vue"
@@ -46,6 +50,7 @@ PLAYER_VIEW="$PROJECT_DIR/frontend/src/views/PlayerView.vue"
 DEVICES_VIEW="$PROJECT_DIR/frontend/src/views/DevicesView.vue"
 ADMIN_LINKS="$PROJECT_DIR/frontend/src/components/AdminLinksPanel.vue"
 CAMERA_LINKS="$PROJECT_DIR/frontend/src/components/CameraTokenLinksPanel.vue"
+DASHBOARD_ROUTE="$PROJECT_DIR/backend/src/routes/dashboard.ts"
 
 for marker in \
   'managedTokenForm.auto_assign_new_cameras' \
@@ -107,6 +112,16 @@ grep -q 'cameraForm.managed_token_ids' "$DEVICES_VIEW" || {
 
 grep -q '<th>Комментарий</th>' "$DEVICES_VIEW" || {
   echo "Device comment column was not prepared" >&2
+  exit 1
+}
+
+grep -q 'editingDevice && value === editingDevice.connection_type' "$DEVICES_VIEW" || {
+  echo "Hikvision device edit-form hydration guard was not prepared" >&2
+  exit 1
+}
+
+grep -q "connection_type === 'HIKVISION'" "$DASHBOARD_ROUTE" || {
+  echo "Dashboard Hikvision configured-state handling was not prepared" >&2
   exit 1
 }
 

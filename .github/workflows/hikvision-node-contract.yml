@@ -13,6 +13,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Prepare and validate Hikvision settings persistence
+        run: |
+          python3 -m py_compile scripts/patch-hikvision-device-settings.py
+          python3 scripts/patch-hikvision-device-settings.py --project-dir .
+          before_devices="$(sha256sum frontend/src/views/DevicesView.vue | awk '{print $1}')"
+          before_dashboard="$(sha256sum backend/src/routes/dashboard.ts | awk '{print $1}')"
+          python3 scripts/patch-hikvision-device-settings.py --project-dir .
+          test "$before_devices" = "$(sha256sum frontend/src/views/DevicesView.vue | awk '{print $1}')"
+          test "$before_dashboard" = "$(sha256sum backend/src/routes/dashboard.ts | awk '{print $1}')"
+          grep -q "editingDevice && value === editingDevice.connection_type" frontend/src/views/DevicesView.vue
+          grep -q "connection_type === 'HIKVISION'" backend/src/routes/dashboard.ts
       - name: Validate contract files
         run: |
           test -s backend/migrations/094_hikvision_node_contract.sql
