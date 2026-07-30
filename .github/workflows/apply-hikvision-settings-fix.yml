@@ -1,0 +1,62 @@
+name: Apply Hikvision settings persistence fix
+
+on:
+  push:
+    branches: [fix/hikvision-device-settings-persistence]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/hikvision-device-settings-persistence
+          fetch-depth: 0
+      - name: Apply exact source patches
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          dashboard = Path('backend/src/routes/dashboard.ts')
+          text = dashboard.read_text(encoding='utf-8')
+          old = """  if (row.connection_type === 'RTSP') return Boolean(row.rtsp_url || row.host);\n  if (row.connection_type === 'ONVIF') return Boolean(row.host && row.port);\n  return false;\n"""
+          new = """  if (row.connection_type === 'RTSP') return Boolean(row.rtsp_url || row.host);\n  if (row.connection_type === 'ONVIF') return Boolean(row.host && row.port);\n  if (row.connection_type === 'HIKVISION') return Boolean(row.host && row.port && row.dvr_server_id);\n  return false;\n"""
+          if new not in text:
+              if old not in text:
+                  raise SystemExit('dashboard deviceConfigured anchor not found')
+              text = text.replace(old, new, 1)
+              dashboard.write_text(text, encoding='utf-8')
+
+          devices = Path('frontend/src/views/DevicesView.vue')
+          text = devices.read_text(encoding='utf-8')
+          old = """watch(() => form.connection_type, (value, previous) => {\n  if (value === previous) return;\n  form.dvr_server_id = null;\n"""
+          new = """watch(() => form.connection_type, (value, previous) => {\n  if (value === previous) return;\n  const editingDevice = editingId.value\n    ? devices.value.find((device) => device.id === editingId.value)\n    : null;\n  // Object.assign() hydrates the edit form reactively. Do not interpret that\n  // initial assignment as a user-requested type change and erase saved fields.\n  if (editingDevice && value === editingDevice.connection_type) return;\n  form.dvr_server_id = null;\n"""
+          if new not in text:
+              if old not in text:
+                  raise SystemExit('DevicesView watcher anchor not found')
+              text = text.replace(old, new, 1)
+              devices.write_text(text, encoding='utf-8')
+
+          contract = Path('.github/workflows/hikvision-node-contract.yml')
+          text = contract.read_text(encoding='utf-8')
+          anchor = """          grep -q \"ARCHIVE_RANGE_CHUNK_MS\" backend/src/routes/hikvisionPlayer.ts\n"""
+          addition = """          grep -q \"ARCHIVE_RANGE_CHUNK_MS\" backend/src/routes/hikvisionPlayer.ts\n          grep -q \"connection_type === 'HIKVISION'\" backend/src/routes/dashboard.ts\n          grep -q \"editingDevice && value === editingDevice.connection_type\" frontend/src/views/DevicesView.vue\n"""
+          if addition not in text:
+              if anchor not in text:
+                  raise SystemExit('Hikvision contract anchor not found')
+              text = text.replace(anchor, addition, 1)
+              contract.write_text(text, encoding='utf-8')
+
+          Path('.github/workflows/apply-hikvision-settings-fix.yml').unlink()
+          PY
+      - name: Commit patched sources
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add backend/src/routes/dashboard.ts frontend/src/views/DevicesView.vue .github/workflows/hikvision-node-contract.yml .github/workflows/apply-hikvision-settings-fix.yml
+          git commit -m "Fix Hikvision device settings persistence"
+          git push origin HEAD:fix/hikvision-device-settings-persistence
