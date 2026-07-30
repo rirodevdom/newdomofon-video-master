@@ -35,6 +35,18 @@ jobs:
           grep -q "rewriteHlsPlaylistBrowserToken" backend/src/routes/hikvisionPlayer.ts
           grep -q "x-newdomofon-hikvision-playlist-token" backend/src/routes/hikvisionPlayer.ts
           grep -q "await sendProxyHlsPlaylist(upstream, res, browserToken)" backend/src/routes/hikvisionPlayer.ts
+      - name: Prepare and validate Hikvision response performance
+        run: |
+          python3 -m py_compile scripts/patch-hikvision-performance.py
+          python3 scripts/patch-hikvision-performance.py --project-dir .
+          before="$(sha256sum backend/src/routes/hikvisionPlayer.ts frontend/src/views/HikvisionPlayerView.vue | sha256sum | awk '{print $1}')"
+          python3 scripts/patch-hikvision-performance.py --project-dir .
+          after="$(sha256sum backend/src/routes/hikvisionPlayer.ts frontend/src/views/HikvisionPlayerView.vue | sha256sum | awk '{print $1}')"
+          test "$before" = "$after"
+          grep -q "ARCHIVE_RANGE_CONCURRENCY = 2" backend/src/routes/hikvisionPlayer.ts
+          grep -q "loadArchiveRangesCached" backend/src/routes/hikvisionPlayer.ts
+          grep -q "Live must not wait" frontend/src/views/HikvisionPlayerView.vue
+          grep -q "rangesPromise" frontend/src/views/HikvisionPlayerView.vue
       - name: Validate contract files
         run: |
           test -s backend/migrations/094_hikvision_node_contract.sql
