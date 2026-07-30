@@ -17,6 +17,7 @@ AUTO_ASSIGN_ALL_UI_PATCH="$PROJECT_DIR/scripts/patch-auto-assign-all-cameras-ui.
 CAMERA_DEVICE_UI_PATCH="$PROJECT_DIR/scripts/patch-camera-device-ui.py"
 CAMERA_TOKEN_WORKFLOW_PATCH="$PROJECT_DIR/scripts/patch-camera-token-workflow.py"
 HIKVISION_DEVICE_SETTINGS_PATCH="$PROJECT_DIR/scripts/patch-hikvision-device-settings.py"
+HIKVISION_PERFORMANCE_PATCH="$PROJECT_DIR/scripts/patch-hikvision-performance.py"
 
 require_file "$MANUAL_AUTO_PATCH"
 require_file "$SYSTEM_TOKEN_UI_PATCH"
@@ -24,6 +25,7 @@ require_file "$AUTO_ASSIGN_ALL_UI_PATCH"
 require_file "$CAMERA_DEVICE_UI_PATCH"
 require_file "$CAMERA_TOKEN_WORKFLOW_PATCH"
 require_file "$HIKVISION_DEVICE_SETTINGS_PATCH"
+require_file "$HIKVISION_PERFORMANCE_PATCH"
 require_file "$PROJECT_DIR/frontend/src/components/CameraTokenLinksPanel.vue"
 
 python3 -m py_compile \
@@ -32,7 +34,8 @@ python3 -m py_compile \
   "$AUTO_ASSIGN_ALL_UI_PATCH" \
   "$CAMERA_DEVICE_UI_PATCH" \
   "$CAMERA_TOKEN_WORKFLOW_PATCH" \
-  "$HIKVISION_DEVICE_SETTINGS_PATCH"
+  "$HIKVISION_DEVICE_SETTINGS_PATCH" \
+  "$HIKVISION_PERFORMANCE_PATCH"
 
 # The historical managed-token implementation is still materialized by
 # idempotent source patchers. Run every UI-related patch in dependency order so
@@ -43,11 +46,14 @@ python3 "$AUTO_ASSIGN_ALL_UI_PATCH" --project-dir "$PROJECT_DIR"
 python3 "$CAMERA_DEVICE_UI_PATCH" --project-dir "$PROJECT_DIR"
 python3 "$CAMERA_TOKEN_WORKFLOW_PATCH" --project-dir "$PROJECT_DIR"
 python3 "$HIKVISION_DEVICE_SETTINGS_PATCH" --project-dir "$PROJECT_DIR"
+python3 "$HIKVISION_PERFORMANCE_PATCH" --project-dir "$PROJECT_DIR"
 
 ADMIN_VIEW="$PROJECT_DIR/frontend/src/views/AdminView.vue"
 CAMERAS_VIEW="$PROJECT_DIR/frontend/src/views/CamerasView.vue"
 PLAYER_VIEW="$PROJECT_DIR/frontend/src/views/PlayerView.vue"
 DEVICES_VIEW="$PROJECT_DIR/frontend/src/views/DevicesView.vue"
+HIKVISION_PLAYER_VIEW="$PROJECT_DIR/frontend/src/views/HikvisionPlayerView.vue"
+HIKVISION_PLAYER_KIT="$PROJECT_DIR/frontend/public/player-kit/newdomofon-player.iife.js"
 ADMIN_LINKS="$PROJECT_DIR/frontend/src/components/AdminLinksPanel.vue"
 CAMERA_LINKS="$PROJECT_DIR/frontend/src/components/CameraTokenLinksPanel.vue"
 DASHBOARD_ROUTE="$PROJECT_DIR/backend/src/routes/dashboard.ts"
@@ -122,6 +128,21 @@ grep -q 'editingDevice && value === editingDevice.connection_type' "$DEVICES_VIE
 
 grep -q "connection_type === 'HIKVISION'" "$DASHBOARD_ROUTE" || {
   echo "Dashboard Hikvision configured-state handling was not prepared" >&2
+  exit 1
+}
+
+grep -q 'if (!latestRanges.length) await loadArchiveRanges();' "$HIKVISION_PLAYER_VIEW" || {
+  echo "Hikvision archive first-use range wait was not prepared" >&2
+  exit 1
+}
+
+grep -q 'void loadStatus(serial)' "$HIKVISION_PLAYER_VIEW" || {
+  echo "Hikvision status is still blocked by player mount" >&2
+  exit 1
+}
+
+grep -q 'await this.playLive(),void this.loadOptionalLayers()' "$HIKVISION_PLAYER_KIT" || {
+  echo "Player-kit still waits for archive ranges before live" >&2
   exit 1
 }
 
