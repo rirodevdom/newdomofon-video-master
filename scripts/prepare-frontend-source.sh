@@ -135,8 +135,13 @@ grep -q "connection_type === 'HIKVISION'" "$DASHBOARD_ROUTE" || {
   exit 1
 }
 
-grep -q 'let startMs = requestedMs - 10_000;' "$HIKVISION_PLAYER_VIEW" || {
-  echo "Hikvision archive seek fallback was not prepared" >&2
+grep -q 'ARCHIVE_LIVE_EDGE_DELAY_MS = 30_000' "$HIKVISION_PLAYER_VIEW" || {
+  echo "Hikvision archive live-edge delay was not prepared" >&2
+  exit 1
+}
+
+grep -q 'startMs = Math.max(0, endMs - requestedDurationMs)' "$HIKVISION_PLAYER_VIEW" || {
+  echo "Hikvision archive request is still truncated at the live edge" >&2
   exit 1
 }
 
