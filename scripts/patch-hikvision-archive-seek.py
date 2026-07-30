@@ -19,7 +19,7 @@ def patch_frontend(path: Path) -> None:
     text = replace_once(
         text,
         "const ARCHIVE_MAX_SECONDS = 10 * 60;\nconst ARCHIVE_MIN_SECONDS = 60;",
-        "const ARCHIVE_MAX_SECONDS = 10 * 60;\nconst ARCHIVE_MIN_SECONDS = 60;\nconst ARCHIVE_LIVE_EDGE_DELAY_MS = 30_000;",
+        "const ARCHIVE_MAX_SECONDS = 10 * 60;\nconst ARCHIVE_MIN_SECONDS = 60;\nconst ARCHIVE_LIVE_EDGE_DELAY_MS = 90_000;",
         "archive live edge delay",
     )
     old = '''                if (!latestRanges.length) await loadArchiveRanges();
