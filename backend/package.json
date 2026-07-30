@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "prebuild": "python3 ../scripts/remove-hikvision-runtime.py && python3 ../scripts/patch-hikvision-device-settings.py --project-dir .. && python3 ../scripts/patch-hikvision-hls-proxy.py --project-dir ..",
+    "prebuild": "python3 ../scripts/remove-hikvision-runtime.py && python3 ../scripts/patch-hikvision-device-settings.py --project-dir .. && python3 ../scripts/patch-hikvision-hls-proxy.py --project-dir .. && python3 ../scripts/patch-hikvision-performance.py --project-dir ..",
     "build": "tsc",
     "start": "node dist/index.js",
     "migrate": "tsx src/migrate.ts",
@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
-    "cors": "^2.8.5",
+    "cors": "^2.8.17",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "express-rate-limit": "^7.5.0",
