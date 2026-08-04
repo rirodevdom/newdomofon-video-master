@@ -6,6 +6,7 @@ SITE_CONF="${SITE_CONF:-/etc/nginx/sites-available/newdomofon-video.conf}"
 ENABLED_CONF="${ENABLED_CONF:-/etc/nginx/sites-enabled/newdomofon-video.conf}"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/newdomofon-video/nginx}"
 PROJECT_DIR="${PROJECT_DIR:-/opt/newdomofon-video-master}"
+ENV_FILE="${ENV_FILE:-/etc/newdomofon-video/app.env}"
 NORMALIZER="${NORMALIZER:-$PROJECT_DIR/scripts/normalize-smartyard-media-cors.py}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP="$BACKUP_DIR/newdomofon-video.conf.before-public-media-cors-$STAMP.bak"
@@ -37,6 +38,36 @@ command -v curl >/dev/null 2>&1 || {
   exit 2
 }
 
+PUBLIC_BASE_URL="${PUBLIC_MEDIA_PROBE_BASE_URL:-}"
+if [[ -z "$PUBLIC_BASE_URL" && -f "$ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+  PUBLIC_BASE_URL="${SMARTYARD_PUBLIC_BASE_URL:-${APP_PUBLIC_URL:-}}"
+fi
+PUBLIC_BASE_URL="${PUBLIC_BASE_URL%/}"
+[[ -n "$PUBLIC_BASE_URL" ]] || PUBLIC_BASE_URL="http://127.0.0.1"
+
+read -r PROBE_SCHEME PROBE_HOST PROBE_PORT < <(
+  python3 - "$PUBLIC_BASE_URL" <<'PY'
+from urllib.parse import urlparse
+import sys
+
+parsed = urlparse(sys.argv[1])
+scheme = parsed.scheme or "http"
+host = parsed.hostname or "127.0.0.1"
+port = parsed.port or (443 if scheme == "https" else 80)
+print(scheme, host, port)
+PY
+)
+
+PROBE_AUTHORITY="$PROBE_HOST"
+if [[ ( "$PROBE_SCHEME" == "https" && "$PROBE_PORT" != 443 ) || ( "$PROBE_SCHEME" == "http" && "$PROBE_PORT" != 80 ) ]]; then
+  PROBE_AUTHORITY="$PROBE_HOST:$PROBE_PORT"
+fi
+PROBE_URL="$PROBE_SCHEME://$PROBE_AUTHORITY/__cors_probe__/index.m3u8?token=invalid"
+
 install -d -o root -g root -m 0700 "$BACKUP_DIR"
 cp -aL "$SITE_CONF" "$BACKUP"
 
@@ -67,6 +98,7 @@ check_probe() {
   local -a args=(
     -sS
     --max-time 10
+    --resolve "$PROBE_HOST:$PROBE_PORT:127.0.0.1"
     -X "$method"
     -H 'Origin: https://smartyard-cors-probe.local'
     -D "$headers"
@@ -81,8 +113,7 @@ check_probe() {
     )
   fi
 
-  curl "${args[@]}" \
-    'http://127.0.0.1/__cors_probe__/index.m3u8?token=invalid' || true
+  curl "${args[@]}" "$PROBE_URL" || true
 
   python3 - "$headers" "$method" <<'PY'
 from pathlib import Path
@@ -122,6 +153,7 @@ check_probe GET
 trap - ERR
 
 echo "OK: public SmartYard media CORS is canonical"
+echo "Probe: $PROBE_SCHEME://$PROBE_AUTHORITY via 127.0.0.1"
 echo "Access-Control-Allow-Origin=*"
 echo "Access-Control-Allow-Private-Network=true"
 echo "backup=$BACKUP"
