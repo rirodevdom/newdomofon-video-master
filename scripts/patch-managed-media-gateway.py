@@ -138,6 +138,7 @@ def main() -> int:
 
     run_patch(project, "patch-smartyard-preview-live-fallback.py")
     run_patch(project, "patch-smartyard-preview-stale-refresh.py")
+    run_patch(project, "patch-smartyard-preview-fast-cold.py")
     run_patch(project, "patch-smartyard-server-export-timeout.py")
 
     print("Managed media gateway patch applied")
