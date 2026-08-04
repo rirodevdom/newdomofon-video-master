@@ -13,6 +13,7 @@ PATH_FILES = (
     "server-preview-gateway.js",
     "server-formats-gateway.js",
 )
+CHUNKED_RANGE_MARKER = "newdomofon-smartyard-chunked-ranges"
 
 
 def patch_camera_prefix(path: Path) -> bool:
@@ -126,10 +127,15 @@ def main() -> int:
     run_patch(project, "patch-archive-playback-window.py")
     run_patch(project, "patch-archive-seek-navigation.py")
     run_patch(project, "patch-smartyard-range-horizon.py")
-    run_patch(project, "patch-smartyard-flussonic-compat.py")
-    # Replace the one-shot recording_status range query only after the Flussonic
-    # compatibility patch has installed its bounded time-window semantics.
+
+    # On the first pass Flussonic aliases/time-window semantics must be installed
+    # before the one-shot recording_status handler is replaced. On repeated
+    # clean-install passes the chunked handler is already authoritative, so do
+    # not ask the older patcher to match the replaced function again.
+    if CHUNKED_RANGE_MARKER not in node_aware.read_text(encoding="utf-8"):
+        run_patch(project, "patch-smartyard-flussonic-compat.py")
     run_patch(project, "patch-smartyard-chunked-ranges.py")
+
     run_patch(project, "patch-smartyard-preview-live-fallback.py")
     run_patch(project, "patch-smartyard-preview-stale-refresh.py")
     run_patch(project, "patch-smartyard-server-export-timeout.py")
