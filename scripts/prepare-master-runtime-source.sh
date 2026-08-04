@@ -27,6 +27,7 @@ patchers=(
   scripts/patch-managed-media-gateway.py
   scripts/patch-smartyard-flussonic-compat.py
   scripts/patch-smartyard-preview-live-fallback.py
+  scripts/patch-smartyard-preview-stale-refresh.py
 )
 
 for relative in "${patchers[@]}"; do
@@ -41,7 +42,8 @@ python3 -m py_compile \
   "$PROJECT_DIR/scripts/patch-system-managed-token-ui.py" \
   "$PROJECT_DIR/scripts/patch-managed-media-gateway.py" \
   "$PROJECT_DIR/scripts/patch-smartyard-flussonic-compat.py" \
-  "$PROJECT_DIR/scripts/patch-smartyard-preview-live-fallback.py"
+  "$PROJECT_DIR/scripts/patch-smartyard-preview-live-fallback.py" \
+  "$PROJECT_DIR/scripts/patch-smartyard-preview-stale-refresh.py"
 
 python3 "$PROJECT_DIR/scripts/patch-root-only-master-runtime.py" --project-dir "$PROJECT_DIR"
 
@@ -88,6 +90,12 @@ grep -q "newdomofon-smartyard-live-snapshot-fallback" \
 grep -q "fetchLiveSnapshotPreview" \
   "$PROJECT_DIR/smartyard-compat-proxy/server-preview-gateway.js"
 grep -q "'-frames:v', '1'" \
+  "$PROJECT_DIR/smartyard-compat-proxy/server-preview-gateway.js"
+grep -q "newdomofon-smartyard-stale-while-revalidate" \
+  "$PROJECT_DIR/smartyard-compat-proxy/server-preview-gateway.js"
+grep -q "function startPreviewJob" \
+  "$PROJECT_DIR/smartyard-compat-proxy/server-preview-gateway.js"
+grep -q "const previewCameraTails = new Map()" \
   "$PROJECT_DIR/smartyard-compat-proxy/server-preview-gateway.js"
 grep -q "manualManagedCameraTokenDigest(body.token)" \
   "$PROJECT_DIR/backend/src/routes/internalSmartYard.ts"
