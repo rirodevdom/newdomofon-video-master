@@ -125,6 +125,7 @@ def main() -> int:
     # wider Flussonic/fMP4-compatible aliases. All patchers remain idempotent.
     run_patch(project, "patch-archive-playback-window.py")
     run_patch(project, "patch-archive-seek-navigation.py")
+    run_patch(project, "patch-smartyard-range-horizon.py")
     run_patch(project, "patch-smartyard-flussonic-compat.py")
     run_patch(project, "patch-smartyard-preview-live-fallback.py")
     run_patch(project, "patch-smartyard-preview-stale-refresh.py")
