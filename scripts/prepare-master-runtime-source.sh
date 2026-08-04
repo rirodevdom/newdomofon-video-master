@@ -27,6 +27,7 @@ patchers=(
   scripts/patch-managed-media-gateway.py
   scripts/patch-smartyard-range-horizon.py
   scripts/patch-smartyard-flussonic-compat.py
+  scripts/patch-smartyard-chunked-ranges.py
   scripts/patch-smartyard-preview-live-fallback.py
   scripts/patch-smartyard-preview-stale-refresh.py
 )
@@ -44,6 +45,7 @@ python3 -m py_compile \
   "$PROJECT_DIR/scripts/patch-managed-media-gateway.py" \
   "$PROJECT_DIR/scripts/patch-smartyard-range-horizon.py" \
   "$PROJECT_DIR/scripts/patch-smartyard-flussonic-compat.py" \
+  "$PROJECT_DIR/scripts/patch-smartyard-chunked-ranges.py" \
   "$PROJECT_DIR/scripts/patch-smartyard-preview-live-fallback.py" \
   "$PROJECT_DIR/scripts/patch-smartyard-preview-stale-refresh.py"
 
@@ -86,6 +88,10 @@ grep -q "const livePlaylist = /^(?:live|index|video)" \
 grep -q "oldestAllowedMs" \
   "$PROJECT_DIR/smartyard-compat-proxy/server-node-aware.js"
 grep -q "Math.max(14, Math.min(31, DEFAULT_RANGE_DAYS_RAW))" \
+  "$PROJECT_DIR/smartyard-compat-proxy/server-node-aware.js"
+grep -q "newdomofon-smartyard-chunked-ranges" \
+  "$PROJECT_DIR/smartyard-compat-proxy/server-node-aware.js"
+grep -q "x-newdomofon-ranges-chunks" \
   "$PROJECT_DIR/smartyard-compat-proxy/server-node-aware.js"
 grep -q "newdomofon-smartyard-still-preview" \
   "$PROJECT_DIR/smartyard-compat-proxy/server-preview-gateway.js"
