@@ -6,14 +6,13 @@ from pathlib import Path
 
 OLD = "const DEFAULT_RANGE_DAYS = Math.max(1, Math.min(31, Number(process.env.SMARTYARD_DEFAULT_RANGE_DAYS || 30)));\n"
 NEW = """// RBT asks recording_status.json with a historical `from` value and expects the
-// gateway to return every actually available archive range. Never let a stale
-// production env shrink that compatibility horizon below the supported 14-day
-// retention used by the deployment. A larger value is still allowed up to the
-// node /archive/ranges limit.
-const DEFAULT_RANGE_DAYS_RAW = Number(process.env.SMARTYARD_DEFAULT_RANGE_DAYS || 30);
+// gateway to return every actually available archive range. The compatibility
+// default follows the 14-day retention used by the cameras in this deployment;
+// an explicit larger value is still allowed up to the node ranges limit.
+const DEFAULT_RANGE_DAYS_RAW = Number(process.env.SMARTYARD_DEFAULT_RANGE_DAYS || 14);
 const DEFAULT_RANGE_DAYS = Number.isFinite(DEFAULT_RANGE_DAYS_RAW)
   ? Math.max(14, Math.min(31, DEFAULT_RANGE_DAYS_RAW))
-  : 30;
+  : 14;
 """
 MARKER = "Math.max(14, Math.min(31, DEFAULT_RANGE_DAYS_RAW))"
 
@@ -21,6 +20,17 @@ MARKER = "Math.max(14, Math.min(31, DEFAULT_RANGE_DAYS_RAW))"
 def patch_gateway(path: Path) -> bool:
     text = path.read_text(encoding="utf-8")
     if MARKER in text:
+        # Upgrade the first version of this patch, which still defaulted to 30
+        # days. This keeps repeated archive updates idempotent while allowing the
+        # compatibility default to track the actual 14-day retention policy.
+        upgraded = text.replace(
+            "Number(process.env.SMARTYARD_DEFAULT_RANGE_DAYS || 30)",
+            "Number(process.env.SMARTYARD_DEFAULT_RANGE_DAYS || 14)",
+            1,
+        ).replace("  : 30;", "  : 14;", 1)
+        if upgraded != text:
+            path.write_text(upgraded, encoding="utf-8")
+            return True
         return False
     if OLD not in text:
         raise RuntimeError("SmartYard range horizon anchor was not found")
