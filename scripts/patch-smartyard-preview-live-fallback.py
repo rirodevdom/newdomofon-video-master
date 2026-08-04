@@ -10,6 +10,13 @@ MARKER = "newdomofon-smartyard-live-snapshot-fallback"
 def replace_once(text: str, old: str, new: str, label: str) -> tuple[str, bool]:
     if new in text:
         return text, False
+    # Later runtime patchers may append their own preview-mode marker to the
+    # same response header. Treat the live-fallback response patch as already
+    # applied when that header still contains our interpolation marker.
+    if label == "preview response mode":
+        for line in text.splitlines():
+            if "'x-newdomofon-preview-mode':" in line and "${LIVE_SNAPSHOT_FALLBACK_MARKER}" in line:
+                return text, False
     if old not in text:
         raise RuntimeError(f"{label} anchor was not found")
     return text.replace(old, new, 1), True
