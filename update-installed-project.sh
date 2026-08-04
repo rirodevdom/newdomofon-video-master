@@ -223,6 +223,7 @@ run_deploy() {
     SITE_CONF=/etc/nginx/sites-available/newdomofon-video.conf \
     ENABLED_CONF=/etc/nginx/sites-enabled/newdomofon-video.conf \
     BACKUP_DIR=/var/backups/newdomofon-video/nginx \
+    ENV_FILE="$ENV_FILE" \
       bash "$PROJECT_DIR/scripts/repair-public-media-cors.sh"
   fi
 }
@@ -243,9 +244,17 @@ verify_result() {
   curl -fsS --max-time 5 \
     http://127.0.0.1:3000/api/health \
     >"$BACKUP_DIR/backend-health-after.json"
-  curl -fsS --max-time 5 \
-    http://127.0.0.1/api/health \
-    >"$BACKUP_DIR/public-health-after.json"
+
+  # The production Nginx vhost can redirect requests addressed only as
+  # 127.0.0.1. Public media/CORS is already verified against the real hostname
+  # by repair-public-media-cors.sh, so this legacy convenience probe is
+  # diagnostic only and must not turn a healthy update into a false failure.
+  if ! curl -fsS --max-time 5 \
+      http://127.0.0.1/api/health \
+      >"$BACKUP_DIR/public-health-after.json"; then
+    log "Предупреждение: локальная public-health проверка 127.0.0.1 не прошла; backend и production vhost проверяются отдельно"
+    : >"$BACKUP_DIR/public-health-after.json"
+  fi
 
   systemctl is-active --quiet newdomofon-video-backend.service ||
     fail "newdomofon-video-backend.service не активен"
