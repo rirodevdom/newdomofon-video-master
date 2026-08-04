@@ -127,6 +127,9 @@ def main() -> int:
     run_patch(project, "patch-archive-seek-navigation.py")
     run_patch(project, "patch-smartyard-range-horizon.py")
     run_patch(project, "patch-smartyard-flussonic-compat.py")
+    # Replace the one-shot recording_status range query only after the Flussonic
+    # compatibility patch has installed its bounded time-window semantics.
+    run_patch(project, "patch-smartyard-chunked-ranges.py")
     run_patch(project, "patch-smartyard-preview-live-fallback.py")
     run_patch(project, "patch-smartyard-preview-stale-refresh.py")
     run_patch(project, "patch-smartyard-server-export-timeout.py")
