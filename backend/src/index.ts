@@ -13,6 +13,7 @@ import { camerasRouter } from './routes/cameras.js';
 import { favoritesRouter } from './routes/favorites.js';
 import { playerPublicArchiveRouter, playerRouter } from './routes/player.js';
 import { hikvisionMediaProxyRouter, hikvisionPlayerRouter } from './routes/hikvisionPlayer.js';
+import { hikvisionEventsRouter } from './routes/hikvisionEvents.js';
 import { managedAdminPlayerRouter } from './routes/managedAdminPlayer.js';
 import { mediaRouter } from './routes/media.js';
 import { auditRouter } from './routes/audit.js';
@@ -50,7 +51,22 @@ app.use('/api/media', mediaRouter);
 app.use('/api/public-playback-tokens', globalPlaybackTokensRouter);
 app.use('/api/public-media', mediaGlobalPublicTokenRouter);
 app.use(morgan('combined'));
-app.use(rateLimit({ windowMs: 60_000, limit: 600, standardHeaders: 'draft-7', legacyHeaders: false }));
+
+// Browser HLS generates many authenticated/tokenized requests (playlist polls,
+// one-second fragments, retries and parallel tabs). Applying the ordinary API
+// 600 rpm/IP limiter to Hikvision playback made some browsers hit HTTP 429.
+// Keep the normal protection for every other API while media/player requests
+// rely on their existing short-lived HMAC token / authenticated-user checks.
+app.use(rateLimit({
+  windowMs: 60_000,
+  limit: 600,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  skip: (req) => req.path === '/api/hikvision-media'
+    || req.path.startsWith('/api/hikvision-media/')
+    || req.path === '/api/hikvision-player'
+    || req.path.startsWith('/api/hikvision-player/')
+}));
 
 // Browser-facing Hikvision HLS/MP4 traffic is token-authenticated and proxied
 // through master so an HTTPS portal never exposes or loads an http:// node URL.
@@ -91,6 +107,7 @@ app.use('/api/tokens/smartyard-links', smartYardLinksRouter);
 app.use('/api/tokens', tokensRouter);
 app.use('/api/camera-groups', cameraGroupsRouter);
 app.use('/api/cameras', camerasRouter);
+app.use('/api/hikvision-player', hikvisionEventsRouter);
 app.use('/api/hikvision-player', hikvisionPlayerRouter);
 // Public HLS archive proxy must be mounted before any broad /api router
 // that installs requireAuth, especially eventsRouter mounted at /api.
