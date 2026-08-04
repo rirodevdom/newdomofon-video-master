@@ -5,11 +5,19 @@ import argparse
 from pathlib import Path
 
 MARKER = "newdomofon-smartyard-stale-while-revalidate"
+DIRECT_MARKER = "newdomofon-smartyard-direct-live-snapshot"
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> tuple[str, bool]:
     if new in text:
         return text, False
+    # The fast-cold patch appends its marker to the already-installed preview
+    # response header. On repeated clean-install passes the stale semantics are
+    # still present even though the exact old/new multiline block changed.
+    if label == "stale preview response route" and DIRECT_MARKER in text:
+        for line in text.splitlines():
+            if "'x-newdomofon-preview-mode':" in line and "${PREVIEW_STALE_REFRESH_MARKER}" in line:
+                return text, False
     if old not in text:
         raise RuntimeError(f"{label} anchor was not found")
     return text.replace(old, new, 1), True

@@ -5,10 +5,17 @@ import argparse
 from pathlib import Path
 
 MARKER = "newdomofon-smartyard-live-snapshot-fallback"
+DIRECT_MARKER = "newdomofon-smartyard-direct-live-snapshot"
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> tuple[str, bool]:
     if new in text:
+        return text, False
+    # Later runtime patchers may replace the original live-fallback branch with
+    # a faster direct-snapshot branch. In that state the helper and semantics are
+    # already present, so a repeated clean-install pass must not require the old
+    # multiline anchor again.
+    if label == "preview live fallback start" and DIRECT_MARKER in text and "async function fetchLiveSnapshotPreview(context, stream, outputFile)" in text:
         return text, False
     # Later runtime patchers may append their own preview-mode marker to the
     # same response header. Treat the live-fallback response patch as already
@@ -122,13 +129,14 @@ def patch_preview(path: Path) -> bool:
         f"const LIVE_SNAPSHOT_FALLBACK_MARKER = '{MARKER}';",
         "async function fetchLiveSnapshotPreview(context, stream, outputFile)",
         "/snapshot.jpg?${query.toString()}",
-        "if (!range && targetSec <= 0)",
         "targetSec <= 0 && response.status === 404",
         "LIVE_SNAPSHOT_FALLBACK_MARKER",
     )
     for item in required:
         if item not in text:
             raise RuntimeError(f"preview fallback marker missing: {item}")
+    if "if (!range && targetSec <= 0)" not in text and DIRECT_MARKER not in text:
+        raise RuntimeError("preview fallback/direct snapshot branch is missing")
 
     if changed:
         path.write_text(text, encoding="utf-8")
