@@ -20,6 +20,7 @@ HIKVISION_DEVICE_SETTINGS_PATCH="$PROJECT_DIR/scripts/patch-hikvision-device-set
 HIKVISION_PERFORMANCE_PATCH="$PROJECT_DIR/scripts/patch-hikvision-performance.py"
 HIKVISION_ARCHIVE_SEEK_PATCH="$PROJECT_DIR/scripts/patch-hikvision-archive-seek.py"
 HIKVISION_RETRY_READINESS_PATCH="$PROJECT_DIR/scripts/patch-hikvision-retry-readiness.py"
+HIKVISION_EVENTS_PATCH="$PROJECT_DIR/scripts/patch-hikvision-player-events.py"
 
 require_file "$MANUAL_AUTO_PATCH"
 require_file "$SYSTEM_TOKEN_UI_PATCH"
@@ -30,6 +31,7 @@ require_file "$HIKVISION_DEVICE_SETTINGS_PATCH"
 require_file "$HIKVISION_PERFORMANCE_PATCH"
 require_file "$HIKVISION_ARCHIVE_SEEK_PATCH"
 require_file "$HIKVISION_RETRY_READINESS_PATCH"
+require_file "$HIKVISION_EVENTS_PATCH"
 require_file "$PROJECT_DIR/frontend/src/components/CameraTokenLinksPanel.vue"
 
 python3 -m py_compile \
@@ -41,7 +43,8 @@ python3 -m py_compile \
   "$HIKVISION_DEVICE_SETTINGS_PATCH" \
   "$HIKVISION_PERFORMANCE_PATCH" \
   "$HIKVISION_ARCHIVE_SEEK_PATCH" \
-  "$HIKVISION_RETRY_READINESS_PATCH"
+  "$HIKVISION_RETRY_READINESS_PATCH" \
+  "$HIKVISION_EVENTS_PATCH"
 
 # The historical managed-token implementation is still materialized by
 # idempotent source patchers. Run every UI-related patch in dependency order so
@@ -55,6 +58,7 @@ python3 "$HIKVISION_DEVICE_SETTINGS_PATCH" --project-dir "$PROJECT_DIR"
 python3 "$HIKVISION_PERFORMANCE_PATCH" --project-dir "$PROJECT_DIR"
 python3 "$HIKVISION_ARCHIVE_SEEK_PATCH" --project-dir "$PROJECT_DIR"
 python3 "$HIKVISION_RETRY_READINESS_PATCH" --project-dir "$PROJECT_DIR"
+python3 "$HIKVISION_EVENTS_PATCH" --project-dir "$PROJECT_DIR"
 
 ADMIN_VIEW="$PROJECT_DIR/frontend/src/views/AdminView.vue"
 CAMERAS_VIEW="$PROJECT_DIR/frontend/src/views/CamerasView.vue"
@@ -161,6 +165,21 @@ grep -q 'RANGE_RETRY_DELAYS_MS' "$HIKVISION_PLAYER_VIEW" || {
 
 grep -q 'latestRanges = mergeKnownRanges' "$HIKVISION_PLAYER_VIEW" || {
   echo "Hikvision provisional timeline range was not prepared" >&2
+  exit 1
+}
+
+grep -q 'newdomofon-hikvision-alertstream-events' "$HIKVISION_PLAYER_VIEW" || {
+  echo "Hikvision alertStream event adapter was not prepared" >&2
+  exit 1
+}
+
+grep -q '`${apiBase.value}/events`' "$HIKVISION_PLAYER_VIEW" || {
+  echo "Hikvision player event API call is missing" >&2
+  exit 1
+}
+
+grep -q 'events: true' "$HIKVISION_PLAYER_VIEW" || {
+  echo "Hikvision player event capability is disabled" >&2
   exit 1
 }
 
