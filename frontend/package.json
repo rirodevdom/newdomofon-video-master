@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "prebuild": "bash ../scripts/prepare-frontend-source.sh",
+    "prebuild": "bash ../scripts/prepare-frontend-source.sh && python3 ../scripts/patch-player-hls-browser-compat.py --project-dir ..",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview --host 0.0.0.0"
   },
