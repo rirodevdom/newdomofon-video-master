@@ -17,6 +17,7 @@ HIDE_CORS_RE = re.compile(
     r"|Expose-Headers|Max-Age);\s*$"
 )
 PRIVATE_NETWORK_LINE = 'add_header Access-Control-Allow-Private-Network "true" always;'
+HIK_OPAQUE_ROUTE = "__hik/[A-Za-z0-9_-]+"
 
 
 def block_end(source: str, opening_brace: int) -> int:
@@ -60,7 +61,22 @@ def normalize_api_location(text: str) -> str:
     return text[:match.start()] + canonical + text[match.end():]
 
 
+def normalize_media_header(block: str) -> str:
+    opening = block.find("{")
+    if opening < 0:
+        raise RuntimeError("public media location opening brace not found")
+    header = block[:opening]
+    if HIK_OPAQUE_ROUTE in header:
+        return block
+    marker = "(?:"
+    if marker not in header:
+        raise RuntimeError("public media location is not an alternation regex")
+    header = header.replace(marker, f"(?:{HIK_OPAQUE_ROUTE}|", 1)
+    return header + block[opening:]
+
+
 def normalize_media_block(block: str) -> str:
+    block = normalize_media_header(block)
     had_final_newline = block.endswith("\n")
     source_lines = block.splitlines()
 
@@ -144,6 +160,9 @@ def normalize_media_block(block: str) -> str:
             raise RuntimeError(
                 f"unexpected canonical CORS count for {marker}: {actual}, expected {expected}"
             )
+
+    if HIK_OPAQUE_ROUTE not in normalized.split("{", 1)[0]:
+        raise RuntimeError("Hikvision opaque media route was not preserved")
 
     return normalized
 
