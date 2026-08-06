@@ -87,6 +87,13 @@ test('Hikvision SmartYard adapter exposes live, ranges, archive and events', asy
   const HIK = base + 7;
   const stream = 'hik_11111111222243338444555555555555_1';
   const token = externalToken(stream);
+  const nowMs = Date.now();
+  const archiveStartMs = nowMs - 10 * 60 * 1000;
+  const archiveEndMs = nowMs - 5 * 60 * 1000;
+  const eventAtMs = archiveStartMs + 2 * 60 * 1000;
+  const archiveStartIso = new Date(archiveStartMs).toISOString();
+  const archiveEndIso = new Date(archiveEndMs).toISOString();
+  const eventAtIso = new Date(eventAtMs).toISOString();
 
   const resolverCalls = [];
   const backend = http.createServer(async (req, res) => {
@@ -138,11 +145,7 @@ test('Hikvision SmartYard adapter exposes live, ranges, archive and events', asy
       rangeRequests += 1;
       return json(res, 200, {
         source: 'device',
-        ranges: [{
-          start: '2026-08-06T10:00:00.000Z',
-          end: '2026-08-06T10:10:00.000Z',
-          source: 'device'
-        }]
+        ranges: [{ start: archiveStartIso, end: archiveEndIso, source: 'device' }]
       });
     }
     if (requestUrl.pathname === '/api/v1/media/channels/hik-device%3A1/archive/session' && req.method === 'POST') {
@@ -175,7 +178,7 @@ test('Hikvision SmartYard adapter exposes live, ranges, archive and events', asy
           id: 'event-1',
           event_type: 'motion',
           event_state: 'active',
-          occurred_at: '2026-08-06T10:05:00.000Z',
+          occurred_at: eventAtIso,
           source_name: 'hikvision.hcnetsdk.history',
           data: { physical_channel: 1 }
         }]
@@ -246,7 +249,7 @@ test('Hikvision SmartYard adapter exposes live, ranges, archive and events', asy
     assert.equal(rangeBody[0].ranges.length, 1);
     assert.equal(rangeRequests, 1);
 
-    const startSec = Math.floor(Date.parse('2026-08-06T10:00:00.000Z') / 1000);
+    const startSec = Math.floor(archiveStartMs / 1000);
     const archive = await fetch(`http://127.0.0.1:${OUTER}/${stream}/archive-${startSec}-30.m3u8?token=${encodeURIComponent(token)}`);
     assert.equal(archive.status, 200);
     const archiveText = await archive.text();
@@ -257,7 +260,7 @@ test('Hikvision SmartYard adapter exposes live, ranges, archive and events', asy
     assert.equal(archiveSegmentResponse.status, 200);
     assert.equal(await archiveSegmentResponse.text(), 'archive-segment');
 
-    const events = await fetch(`http://127.0.0.1:${OUTER}/${stream}/events.json?start=2026-08-06T10:00:00.000Z&end=2026-08-06T10:10:00.000Z&token=${encodeURIComponent(token)}`);
+    const events = await fetch(`http://127.0.0.1:${OUTER}/${stream}/events.json?start=${encodeURIComponent(archiveStartIso)}&end=${encodeURIComponent(archiveEndIso)}&token=${encodeURIComponent(token)}`);
     assert.equal(events.status, 200);
     const eventBody = await events.json();
     assert.equal(eventBody.count, 1);
