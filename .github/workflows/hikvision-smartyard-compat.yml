@@ -2,7 +2,7 @@ name: Hikvision SmartYard compatibility
 
 on:
   push:
-    branches: [main, 'agent/**']
+    branches: [main, 'agent/**', 'fix/**']
     paths:
       - 'scripts/patch-hikvision-smartyard-links.py'
       - 'scripts/patch-hikvision-smartyard-upstream-auth.py'
@@ -45,6 +45,72 @@ jobs:
           grep -q "generic_passthrough: true" smartyard-compat-proxy/server-hikvision-gateway.js
           grep -q "server-hikvision-gateway.js" deploy/systemd/newdomofon-smartyard-compat.service
           grep -q "SMARTYARD_FORMATS_GATEWAY_PORT=3087" deploy/systemd/newdomofon-smartyard-compat.service
+
+      - name: Regression-test duplicate resolver type fragments
+        run: |
+          tmp="$(mktemp -d)"
+          mkdir -p "$tmp/backend/src/routes"
+          cat > "$tmp/backend/src/routes/internalSmartYard.ts" <<'EOF'
+          type CameraNodeRow = {
+            node_public_url: string | null;
+            node_media_secret: string;
+          };
+
+          type HikvisionSmartYardRow = {
+            node_public_url: string | null;
+            node_media_secret: string;
+          };
+
+          const marker = 'newdomofon-hikvision-smartyard-links-v1';
+
+          function signUpstreamToken(_secret: string, _payload: Record<string, unknown>): string {
+            return '';
+          }
+
+          function sendHikvisionResolved(
+            res: any,
+            channel: HikvisionSmartYardRow,
+            upstreamScope: 'camera' | 'events',
+            userId: string
+          ) {
+            const upstreamToken = signUpstreamToken(channel.node_media_secret, {
+              channel_id: channel.channel_external_id,
+              upstreamScope,
+              userId
+            });
+            return res.json({ upstreamToken });
+          }
+
+          const sql = `SELECT
+                        ds.public_base_url AS node_public_url,
+                        ds.media_secret AS node_media_secret
+                   FROM hikvision_node_channels h`;
+          EOF
+
+          python3 scripts/patch-hikvision-smartyard-upstream-auth.py --project-dir "$tmp"
+          before="$(sha256sum "$tmp/backend/src/routes/internalSmartYard.ts" | awk '{print $1}')"
+          python3 scripts/patch-hikvision-smartyard-upstream-auth.py --project-dir "$tmp"
+          after="$(sha256sum "$tmp/backend/src/routes/internalSmartYard.ts" | awk '{print $1}')"
+          test "$before" = "$after"
+
+          python3 - "$tmp/backend/src/routes/internalSmartYard.ts" <<'PY'
+          from pathlib import Path
+          import sys
+
+          text = Path(sys.argv[1]).read_text(encoding='utf-8')
+
+          def block(name: str) -> str:
+              start = text.index(f'type {name} = {{')
+              end = text.index('\n};', start) + 3
+              return text[start:end]
+
+          generic = block('CameraNodeRow')
+          hikvision = block('HikvisionSmartYardRow')
+          assert 'node_agent_token_hash' not in generic, generic
+          assert 'node_agent_token_hash: string | null;' in hikvision, hikvision
+          assert text.count('newdomofon-hikvision-smartyard-upstream-auth-v1') == 1
+          assert 'ds.agent_token_hash AS node_agent_token_hash' in text
+          PY
 
       - name: Smoke-test Hikvision SmartYard contract
         run: node --test test/hikvisionSmartYardGateway.test.cjs
