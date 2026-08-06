@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'deploy/nginx/newdomofon-video.conf'
+      - 'scripts/normalize-smartyard-media-cors.py'
       - 'scripts/repair-public-media-cors.sh'
       - '.github/workflows/public-media-cors.yml'
   workflow_dispatch:
@@ -38,20 +39,22 @@ jobs:
               raise RuntimeError('unterminated location block')
 
           block = None
+          header = None
           for match in starts:
               opening = text.find('{', match.start(), match.end())
               end = block_end(text, opening)
               candidate = text[match.start():end]
-              header = candidate.split('{', 1)[0]
+              candidate_header = candidate.split('{', 1)[0]
               if (
                   'proxy_pass http://127.0.0.1:3082' in candidate
-                  and 'm3u8' in header
-                  and 'events' not in header
+                  and 'm3u8' in candidate_header
+                  and 'events' not in candidate_header
               ):
                   block = candidate
+                  header = candidate_header
                   break
 
-          if block is None:
+          if block is None or header is None:
               raise SystemExit('public media location not found')
 
           required = [
@@ -65,9 +68,30 @@ jobs:
               if marker not in block:
                   raise SystemExit(f'missing media CORS marker: {marker}')
 
+          if '__hik/[A-Za-z0-9_-]+' not in header:
+              raise SystemExit('opaque Hikvision media route is missing')
+
           if block.count('proxy_hide_header Access-Control-Allow-Origin;') != 1:
               raise SystemExit('media upstream Origin header is not hidden exactly once')
           PY
+
+      - name: Validate preserved production config normalization
+        run: |
+          cp deploy/nginx/newdomofon-video.conf /tmp/preserved.conf
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('/tmp/preserved.conf')
+          text = path.read_text()
+          text = text.replace('__hik/[A-Za-z0-9_-]+|', '', 1)
+          path.write_text(text)
+          PY
+
+          python3 scripts/normalize-smartyard-media-cors.py /tmp/preserved.conf
+          grep -Fq '__hik/[A-Za-z0-9_-]+|' /tmp/preserved.conf
+          first="$(sha256sum /tmp/preserved.conf | awk '{print $1}')"
+          python3 scripts/normalize-smartyard-media-cors.py /tmp/preserved.conf
+          second="$(sha256sum /tmp/preserved.conf | awk '{print $1}')"
+          test "$first" = "$second"
 
       - name: Validate Nginx syntax
         run: |
