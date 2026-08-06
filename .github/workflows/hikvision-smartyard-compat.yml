@@ -7,6 +7,7 @@ on:
       - 'scripts/patch-hikvision-smartyard-links.py'
       - 'scripts/patch-hikvision-smartyard-upstream-auth.py'
       - 'smartyard-compat-proxy/**'
+      - 'test/hikvisionSmartYardGateway.test.cjs'
       - 'backend/package.json'
       - 'backend/src/routes/internalSmartYard.ts'
       - 'backend/src/routes/smartyardLinks.ts'
@@ -19,6 +20,7 @@ on:
       - 'scripts/patch-hikvision-smartyard-links.py'
       - 'scripts/patch-hikvision-smartyard-upstream-auth.py'
       - 'smartyard-compat-proxy/**'
+      - 'test/hikvisionSmartYardGateway.test.cjs'
       - 'backend/package.json'
       - 'backend/src/routes/internalSmartYard.ts'
       - 'backend/src/routes/smartyardLinks.ts'
@@ -43,6 +45,9 @@ jobs:
           grep -q "generic_passthrough: true" smartyard-compat-proxy/server-hikvision-gateway.js
           grep -q "server-hikvision-gateway.js" deploy/systemd/newdomofon-smartyard-compat.service
           grep -q "SMARTYARD_FORMATS_GATEWAY_PORT=3087" deploy/systemd/newdomofon-smartyard-compat.service
+
+      - name: Smoke-test Hikvision SmartYard contract
+        run: node --test test/hikvisionSmartYardGateway.test.cjs
 
       - name: Validate idempotent Hikvision SmartYard materialization
         run: |
