@@ -5,6 +5,7 @@ on:
     branches: [main, 'agent/**']
     paths:
       - 'scripts/patch-hikvision-smartyard-links.py'
+      - 'scripts/patch-hikvision-smartyard-upstream-auth.py'
       - 'smartyard-compat-proxy/**'
       - 'backend/package.json'
       - 'backend/src/routes/internalSmartYard.ts'
@@ -16,6 +17,7 @@ on:
   pull_request:
     paths:
       - 'scripts/patch-hikvision-smartyard-links.py'
+      - 'scripts/patch-hikvision-smartyard-upstream-auth.py'
       - 'smartyard-compat-proxy/**'
       - 'backend/package.json'
       - 'backend/src/routes/internalSmartYard.ts'
@@ -44,13 +46,17 @@ jobs:
 
       - name: Validate idempotent Hikvision SmartYard materialization
         run: |
-          python3 -m py_compile scripts/patch-hikvision-smartyard-links.py
+          python3 -m py_compile scripts/patch-hikvision-smartyard-links.py scripts/patch-hikvision-smartyard-upstream-auth.py
           python3 scripts/patch-hikvision-smartyard-links.py --project-dir .
+          python3 scripts/patch-hikvision-smartyard-upstream-auth.py --project-dir .
           before="$(sha256sum backend/src/routes/internalSmartYard.ts backend/src/routes/smartyardLinks.ts frontend/src/views/HikvisionChannelsView.vue | sha256sum | awk '{print $1}')"
           python3 scripts/patch-hikvision-smartyard-links.py --project-dir .
+          python3 scripts/patch-hikvision-smartyard-upstream-auth.py --project-dir .
           after="$(sha256sum backend/src/routes/internalSmartYard.ts backend/src/routes/smartyardLinks.ts frontend/src/views/HikvisionChannelsView.vue | sha256sum | awk '{print $1}')"
           test "$before" = "$after"
           grep -q "newdomofon-hikvision-smartyard-links-v1" backend/src/routes/internalSmartYard.ts
+          grep -q "newdomofon-hikvision-smartyard-upstream-auth-v1" backend/src/routes/internalSmartYard.ts
+          grep -q "ds.agent_token_hash AS node_agent_token_hash" backend/src/routes/internalSmartYard.ts
           grep -q "channel_id: channel.channel_external_id" backend/src/routes/internalSmartYard.ts
           grep -q "master-smartyard-compat-hikvision" backend/src/routes/smartyardLinks.ts
           grep -q "smartyard-links/hikvision" frontend/src/views/HikvisionChannelsView.vue
@@ -63,8 +69,10 @@ jobs:
           python3 scripts/patch-auto-token-detach-guard.py --project-dir .
           python3 scripts/fix-manual-token-resolver-variable.py --project-dir .
           python3 scripts/patch-hikvision-smartyard-links.py --project-dir .
+          python3 scripts/patch-hikvision-smartyard-upstream-auth.py --project-dir .
           grep -q "manualManagedCameraTokenDigest(body.token)" backend/src/routes/internalSmartYard.ts
           grep -q "newdomofon-hikvision-smartyard-links-v1" backend/src/routes/internalSmartYard.ts
+          grep -q "newdomofon-hikvision-smartyard-upstream-auth-v1" backend/src/routes/internalSmartYard.ts
           grep -q "target: 'hikvision'" backend/src/routes/smartyardLinks.ts
 
       - name: Build backend
