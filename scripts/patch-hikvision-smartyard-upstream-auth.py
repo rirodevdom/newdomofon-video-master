@@ -16,6 +16,28 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
+def replace_in_type(text: str, type_name: str, old: str, new: str, label: str) -> str:
+    start_marker = f"type {type_name} = {{"
+    start = text.find(start_marker)
+    if start < 0:
+        raise RuntimeError(f"{label}: type {type_name} not found")
+
+    end = text.find("\n};", start)
+    if end < 0:
+        raise RuntimeError(f"{label}: closing type delimiter not found")
+    end += len("\n};")
+
+    block = text[start:end]
+    if new in block:
+        return text
+    count = block.count(old)
+    if count != 1:
+        raise RuntimeError(f"{label}: expected one source fragment inside {type_name}, found {count}")
+
+    updated = block.replace(old, new, 1)
+    return text[:start] + updated + text[end:]
+
+
 def patch_resolver(path: Path) -> bool:
     text = path.read_text(encoding="utf-8")
     if MARKER in text:
@@ -23,15 +45,12 @@ def patch_resolver(path: Path) -> bool:
     if "newdomofon-hikvision-smartyard-links-v1" not in text:
         raise RuntimeError("Hikvision SmartYard links must be materialized before upstream auth")
 
-    text = replace_once(
+    text = replace_in_type(
         text,
-        """  node_public_url: string | null;
-  node_media_secret: string;
-};""",
-        """  node_public_url: string | null;
-  node_media_secret: string;
-  node_agent_token_hash: string | null;
-};""",
+        "HikvisionSmartYardRow",
+        """  node_media_secret: string;""",
+        """  node_media_secret: string;
+  node_agent_token_hash: string | null;""",
         "Hikvision SmartYard agent hash type",
     )
 
