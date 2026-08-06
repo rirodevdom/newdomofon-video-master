@@ -1,0 +1,93 @@
+name: Hikvision SmartYard compatibility
+
+on:
+  push:
+    branches: [main, 'agent/**']
+    paths:
+      - 'scripts/patch-hikvision-smartyard-links.py'
+      - 'scripts/patch-hikvision-smartyard-upstream-auth.py'
+      - 'smartyard-compat-proxy/**'
+      - 'test/hikvisionSmartYardGateway.test.cjs'
+      - 'backend/package.json'
+      - 'backend/src/routes/internalSmartYard.ts'
+      - 'backend/src/routes/smartyardLinks.ts'
+      - 'frontend/package.json'
+      - 'frontend/src/views/HikvisionChannelsView.vue'
+      - 'deploy/systemd/newdomofon-smartyard-compat.service'
+      - '.github/workflows/hikvision-smartyard-compat.yml'
+  pull_request:
+    paths:
+      - 'scripts/patch-hikvision-smartyard-links.py'
+      - 'scripts/patch-hikvision-smartyard-upstream-auth.py'
+      - 'smartyard-compat-proxy/**'
+      - 'test/hikvisionSmartYardGateway.test.cjs'
+      - 'backend/package.json'
+      - 'backend/src/routes/internalSmartYard.ts'
+      - 'backend/src/routes/smartyardLinks.ts'
+      - 'frontend/package.json'
+      - 'frontend/src/views/HikvisionChannelsView.vue'
+      - 'deploy/systemd/newdomofon-smartyard-compat.service'
+      - '.github/workflows/hikvision-smartyard-compat.yml'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Validate Hikvision SmartYard gateway syntax
+        run: |
+          node --check smartyard-compat-proxy/server-hikvision-gateway.js
+          grep -q "v305-hikvision-smartyard-gateway" smartyard-compat-proxy/server-hikvision-gateway.js
+          grep -q "generic_passthrough: true" smartyard-compat-proxy/server-hikvision-gateway.js
+          grep -q "server-hikvision-gateway.js" deploy/systemd/newdomofon-smartyard-compat.service
+          grep -q "SMARTYARD_FORMATS_GATEWAY_PORT=3087" deploy/systemd/newdomofon-smartyard-compat.service
+
+      - name: Smoke-test Hikvision SmartYard contract
+        run: node --test test/hikvisionSmartYardGateway.test.cjs
+
+      - name: Validate idempotent Hikvision SmartYard materialization
+        run: |
+          python3 -m py_compile scripts/patch-hikvision-smartyard-links.py scripts/patch-hikvision-smartyard-upstream-auth.py
+          python3 scripts/patch-hikvision-smartyard-links.py --project-dir .
+          python3 scripts/patch-hikvision-smartyard-upstream-auth.py --project-dir .
+          before="$(sha256sum backend/src/routes/internalSmartYard.ts backend/src/routes/smartyardLinks.ts frontend/src/views/HikvisionChannelsView.vue | sha256sum | awk '{print $1}')"
+          python3 scripts/patch-hikvision-smartyard-links.py --project-dir .
+          python3 scripts/patch-hikvision-smartyard-upstream-auth.py --project-dir .
+          after="$(sha256sum backend/src/routes/internalSmartYard.ts backend/src/routes/smartyardLinks.ts frontend/src/views/HikvisionChannelsView.vue | sha256sum | awk '{print $1}')"
+          test "$before" = "$after"
+          grep -q "newdomofon-hikvision-smartyard-links-v1" backend/src/routes/internalSmartYard.ts
+          grep -q "newdomofon-hikvision-smartyard-upstream-auth-v1" backend/src/routes/internalSmartYard.ts
+          grep -q "ds.agent_token_hash AS node_agent_token_hash" backend/src/routes/internalSmartYard.ts
+          grep -q "channel_id: channel.channel_external_id" backend/src/routes/internalSmartYard.ts
+          grep -q "master-smartyard-compat-hikvision" backend/src/routes/smartyardLinks.ts
+          grep -q "smartyard-links/hikvision" frontend/src/views/HikvisionChannelsView.vue
+
+      - name: Validate deploy patch ordering with managed tokens
+        run: |
+          git checkout -- backend/src/routes/internalSmartYard.ts backend/src/routes/smartyardLinks.ts frontend/src/views/HikvisionChannelsView.vue
+          python3 scripts/patch-manual-auto-managed-tokens.py --project-dir .
+          python3 scripts/fix-manual-token-resolver-variable.py --project-dir .
+          python3 scripts/patch-auto-token-detach-guard.py --project-dir .
+          python3 scripts/fix-manual-token-resolver-variable.py --project-dir .
+          python3 scripts/patch-hikvision-smartyard-links.py --project-dir .
+          python3 scripts/patch-hikvision-smartyard-upstream-auth.py --project-dir .
+          grep -q "manualManagedCameraTokenDigest(body.token)" backend/src/routes/internalSmartYard.ts
+          grep -q "newdomofon-hikvision-smartyard-links-v1" backend/src/routes/internalSmartYard.ts
+          grep -q "newdomofon-hikvision-smartyard-upstream-auth-v1" backend/src/routes/internalSmartYard.ts
+          grep -q "target: 'hikvision'" backend/src/routes/smartyardLinks.ts
+
+      - name: Build backend
+        working-directory: backend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
