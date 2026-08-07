@@ -21,8 +21,19 @@ def main() -> None:
 
     original_replace_once = module.replace_once
 
+    def normalize_enable_defaults(text: str) -> str:
+        return (
+            text
+            .replace('camera.hikvision_channel_enabled !== false', '(camera.hikvision_channel_enabled ?? true)')
+            .replace('camera.hikvision_device_enabled !== false', '(camera.hikvision_device_enabled ?? true)')
+            .replace('managedCamera.hikvision_channel_enabled !== false', '(managedCamera.hikvision_channel_enabled ?? true)')
+            .replace('managedCamera.hikvision_device_enabled !== false', '(managedCamera.hikvision_device_enabled ?? true)')
+        )
+
     def managed_name(text: str) -> str:
-        return text.replace('camera.', 'managedCamera.').replace('      camera,\n', '      managedCamera,\n')
+        return normalize_enable_defaults(
+            text.replace('camera.', 'managedCamera.').replace('      camera,\n', '      managedCamera,\n')
+        )
 
     def replace_compatible(text: str, old: str, new: str, label: str) -> str:
         if label == 'managed canonical Hikvision resolver query':
@@ -41,7 +52,7 @@ def main() -> None:
             # managed-token row from camera -> managedCamera before this patch
             # runs. Support both source shapes while keeping the collision guard.
             if text.count(old) == 1:
-                return text.replace(old, new, 1)
+                return text.replace(old, normalize_enable_defaults(new), 1)
             guarded_old = managed_name(old)
             guarded_new = managed_name(new)
             if guarded_new in text:
