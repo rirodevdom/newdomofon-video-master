@@ -6,10 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const root = path.resolve(__dirname, '..');
-
-function read(relative) {
-  return fs.readFileSync(path.join(root, relative), 'utf8');
-}
+function read(relative) { return fs.readFileSync(path.join(root, relative), 'utf8'); }
 
 test('Hikvision channels are projected into the unified cameras catalog', () => {
   const cameras = read('backend/src/routes/cameras.ts');
@@ -31,11 +28,12 @@ test('Hikvision permanent link endpoint exposes ordinary-camera link shape', () 
   assert.match(links, /type: 'MPEG-TS'.*available: false/);
 });
 
-test('unified patch runs after Hikvision SmartYard link materialization', () => {
-  const pkg = JSON.parse(read('backend/package.json'));
-  const prebuild = pkg.scripts.prebuild;
-  const linkPatch = prebuild.indexOf('patch-hikvision-smartyard-links.py');
-  const unifiedPatch = prebuild.indexOf('patch-hikvision-unified-cameras.py');
-  assert.ok(linkPatch >= 0);
-  assert.ok(unifiedPatch > linkPatch);
+test('catalog and link shape run after Hikvision SmartYard link materialization', () => {
+  const prebuild = JSON.parse(read('backend/package.json')).scripts.prebuild;
+  const baseLinks = prebuild.indexOf('patch-hikvision-smartyard-links.py');
+  const catalog = prebuild.indexOf('patch-hikvision-unified-camera-catalog.py');
+  const linkShape = prebuild.indexOf('patch-hikvision-unified-links-shape.py');
+  assert.ok(baseLinks >= 0);
+  assert.ok(catalog > baseLinks);
+  assert.ok(linkShape > catalog);
 });
