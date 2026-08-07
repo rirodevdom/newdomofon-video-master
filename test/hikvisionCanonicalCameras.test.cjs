@@ -61,6 +61,6 @@ test('obsolete virtual-camera build materializers are no longer active', () => {
   const prebuild = pkg.scripts.prebuild;
   assert.doesNotMatch(prebuild, /patch-hikvision-unified-camera-catalog\.py/);
   assert.doesNotMatch(prebuild, /patch-hikvision-unified-links-shape\.py/);
-  assert.match(prebuild, /patch-hikvision-canonical-cameras\.py/);
+  assert.match(prebuild, /patch-hikvision-canonical-cameras-v2\.py/);
   assert.match(prebuild, /patch-hikvision-master-player-time-v2\.py/);
 });
