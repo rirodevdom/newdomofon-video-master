@@ -17,10 +17,6 @@ AUTO_ASSIGN_ALL_UI_PATCH="$PROJECT_DIR/scripts/patch-auto-assign-all-cameras-ui.
 CAMERA_DEVICE_UI_PATCH="$PROJECT_DIR/scripts/patch-camera-device-ui.py"
 CAMERA_TOKEN_WORKFLOW_PATCH="$PROJECT_DIR/scripts/patch-camera-token-workflow.py"
 HIKVISION_DEVICE_SETTINGS_PATCH="$PROJECT_DIR/scripts/patch-hikvision-device-settings.py"
-HIKVISION_PERFORMANCE_PATCH="$PROJECT_DIR/scripts/patch-hikvision-performance.py"
-HIKVISION_ARCHIVE_SEEK_PATCH="$PROJECT_DIR/scripts/patch-hikvision-archive-seek.py"
-HIKVISION_RETRY_READINESS_PATCH="$PROJECT_DIR/scripts/patch-hikvision-retry-readiness.py"
-HIKVISION_EVENTS_PATCH="$PROJECT_DIR/scripts/patch-hikvision-player-events.py"
 
 require_file "$MANUAL_AUTO_PATCH"
 require_file "$SYSTEM_TOKEN_UI_PATCH"
@@ -28,10 +24,6 @@ require_file "$AUTO_ASSIGN_ALL_UI_PATCH"
 require_file "$CAMERA_DEVICE_UI_PATCH"
 require_file "$CAMERA_TOKEN_WORKFLOW_PATCH"
 require_file "$HIKVISION_DEVICE_SETTINGS_PATCH"
-require_file "$HIKVISION_PERFORMANCE_PATCH"
-require_file "$HIKVISION_ARCHIVE_SEEK_PATCH"
-require_file "$HIKVISION_RETRY_READINESS_PATCH"
-require_file "$HIKVISION_EVENTS_PATCH"
 require_file "$PROJECT_DIR/frontend/src/components/CameraTokenLinksPanel.vue"
 
 python3 -m py_compile \
@@ -40,32 +32,24 @@ python3 -m py_compile \
   "$AUTO_ASSIGN_ALL_UI_PATCH" \
   "$CAMERA_DEVICE_UI_PATCH" \
   "$CAMERA_TOKEN_WORKFLOW_PATCH" \
-  "$HIKVISION_DEVICE_SETTINGS_PATCH" \
-  "$HIKVISION_PERFORMANCE_PATCH" \
-  "$HIKVISION_ARCHIVE_SEEK_PATCH" \
-  "$HIKVISION_RETRY_READINESS_PATCH" \
-  "$HIKVISION_EVENTS_PATCH"
+  "$HIKVISION_DEVICE_SETTINGS_PATCH"
 
-# The historical managed-token implementation is still materialized by
-# idempotent source patchers. Run every UI-related patch in dependency order so
-# a frontend-only build from a clean checkout cannot silently drop features.
+# Hikvision channels are canonical cameras now. Frontend preparation therefore
+# applies only the common camera/token/device UI materializers. The old
+# HikvisionChannelsView/HikvisionPlayerView performance/seek/event patch chain
+# is deliberately not part of production preparation anymore; /cameras/:id
+# selects Hikvision transport internally after this common preparation step.
 python3 "$MANUAL_AUTO_PATCH" --project-dir "$PROJECT_DIR"
 python3 "$SYSTEM_TOKEN_UI_PATCH" --project-dir "$PROJECT_DIR"
 python3 "$AUTO_ASSIGN_ALL_UI_PATCH" --project-dir "$PROJECT_DIR"
 python3 "$CAMERA_DEVICE_UI_PATCH" --project-dir "$PROJECT_DIR"
 python3 "$CAMERA_TOKEN_WORKFLOW_PATCH" --project-dir "$PROJECT_DIR"
 python3 "$HIKVISION_DEVICE_SETTINGS_PATCH" --project-dir "$PROJECT_DIR"
-python3 "$HIKVISION_PERFORMANCE_PATCH" --project-dir "$PROJECT_DIR"
-python3 "$HIKVISION_ARCHIVE_SEEK_PATCH" --project-dir "$PROJECT_DIR"
-python3 "$HIKVISION_RETRY_READINESS_PATCH" --project-dir "$PROJECT_DIR"
-python3 "$HIKVISION_EVENTS_PATCH" --project-dir "$PROJECT_DIR"
 
 ADMIN_VIEW="$PROJECT_DIR/frontend/src/views/AdminView.vue"
 CAMERAS_VIEW="$PROJECT_DIR/frontend/src/views/CamerasView.vue"
 PLAYER_VIEW="$PROJECT_DIR/frontend/src/views/PlayerView.vue"
 DEVICES_VIEW="$PROJECT_DIR/frontend/src/views/DevicesView.vue"
-HIKVISION_PLAYER_VIEW="$PROJECT_DIR/frontend/src/views/HikvisionPlayerView.vue"
-HIKVISION_PLAYER_KIT="$PROJECT_DIR/frontend/public/player-kit/newdomofon-player.iife.js"
 ADMIN_LINKS="$PROJECT_DIR/frontend/src/components/AdminLinksPanel.vue"
 CAMERA_LINKS="$PROJECT_DIR/frontend/src/components/CameraTokenLinksPanel.vue"
 DASHBOARD_ROUTE="$PROJECT_DIR/backend/src/routes/dashboard.ts"
@@ -143,59 +127,4 @@ grep -q "connection_type === 'HIKVISION'" "$DASHBOARD_ROUTE" || {
   exit 1
 }
 
-grep -q 'ARCHIVE_LIVE_EDGE_DELAY_MS = 90_000' "$HIKVISION_PLAYER_VIEW" || {
-  echo "Hikvision archive live-edge delay was not prepared" >&2
-  exit 1
-}
-
-grep -q 'startMs = Math.max(0, endMs - requestedDurationMs)' "$HIKVISION_PLAYER_VIEW" || {
-  echo "Hikvision archive request is still truncated at the live edge" >&2
-  exit 1
-}
-
-if grep -q 'if (!latestRanges.length) await loadArchiveRanges();' "$HIKVISION_PLAYER_VIEW"; then
-  echo "Hikvision archive seek still waits for full range loading" >&2
-  exit 1
-fi
-
-grep -q 'RANGE_RETRY_DELAYS_MS' "$HIKVISION_PLAYER_VIEW" || {
-  echo "Hikvision archive range retry loop was not prepared" >&2
-  exit 1
-}
-
-grep -q 'latestRanges = mergeKnownRanges' "$HIKVISION_PLAYER_VIEW" || {
-  echo "Hikvision provisional timeline range was not prepared" >&2
-  exit 1
-}
-
-grep -q 'newdomofon-hikvision-alertstream-events' "$HIKVISION_PLAYER_VIEW" || {
-  echo "Hikvision alertStream event adapter was not prepared" >&2
-  exit 1
-}
-
-grep -q '`${apiBase.value}/events`' "$HIKVISION_PLAYER_VIEW" || {
-  echo "Hikvision player event API call is missing" >&2
-  exit 1
-}
-
-grep -q 'events: true' "$HIKVISION_PLAYER_VIEW" || {
-  echo "Hikvision player event capability is disabled" >&2
-  exit 1
-}
-
-grep -q 'this.logger.warn("archive-ranges",t)' "$HIKVISION_PLAYER_KIT" || {
-  echo "Player-kit still disables the timeline after a transient range failure" >&2
-  exit 1
-}
-
-grep -q 'void loadStatus(serial)' "$HIKVISION_PLAYER_VIEW" || {
-  echo "Hikvision status is still blocked by player mount" >&2
-  exit 1
-}
-
-grep -q 'await this.playLive(),void this.loadOptionalLayers()' "$HIKVISION_PLAYER_KIT" || {
-  echo "Player-kit still waits for archive ranges before live" >&2
-  exit 1
-}
-
-echo "Frontend sources prepared with complete camera token workflow and latest UI"
+echo "Frontend sources prepared for canonical camera UI; Hikvision uses ordinary Cameras/PlayerView"
