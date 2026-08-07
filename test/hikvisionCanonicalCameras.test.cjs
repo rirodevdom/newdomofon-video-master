@@ -32,7 +32,7 @@ test('ordinary Cameras API exposes the canonical Hikvision binding', () => {
 test('managed tokens resolve canonical Hikvision cameras through Hikvision node', () => {
   const resolver = read('backend/src/routes/internalSmartYard.ts');
   assert.match(resolver, /LEFT JOIN hikvision_node_channels h ON h\.camera_id = c\.id/);
-  assert.match(resolver, /camera\.device_connection_type === 'HIKVISION'/);
+  assert.match(resolver, /managedCamera\.device_connection_type === 'HIKVISION'/);
   assert.match(resolver, /return sendHikvisionResolved\(/);
 
   const tokens = read('backend/src/routes/managedCameraTokens.ts');
