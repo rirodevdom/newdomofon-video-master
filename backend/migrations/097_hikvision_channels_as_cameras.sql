@@ -31,7 +31,7 @@ SELECT
   h.device_id,
   h.archive_storage,
   h.retention_days,
-  h.enabled AND d.is_enabled
+  h.enabled
 FROM public.hikvision_node_channels h
 JOIN public.devices d ON d.id = h.device_id
 WHERE h.camera_id IS NULL
