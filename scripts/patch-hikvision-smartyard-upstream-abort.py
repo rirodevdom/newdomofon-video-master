@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 from pathlib import Path
 
 MARKER = 'HIKVISION_SMARTYARD_UPSTREAM_ABORT'
@@ -121,12 +122,27 @@ async function nodeRequest(context, pathname, req, timeoutMs = 30000, init = {})
     print('Obsolete browser seek requests now cancel the in-flight upstream fetch')
 
 
+def validate_gateway(path: Path) -> None:
+    result = subprocess.run(
+        ['node', '--check', str(path)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or 'node --check failed').strip()
+        raise RuntimeError(f'Hikvision SmartYard gateway syntax validation failed: {detail}')
+    print('Hikvision SmartYard gateway syntax validated after upstream-abort materialization')
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument('--project-dir', default='.')
     args = parser.parse_args()
     root = Path(args.project_dir).resolve()
-    patch_gateway(root / 'smartyard-compat-proxy/server-hikvision-gateway.js')
+    gateway = root / 'smartyard-compat-proxy/server-hikvision-gateway.js'
+    patch_gateway(gateway)
+    validate_gateway(gateway)
 
 
 if __name__ == '__main__':
