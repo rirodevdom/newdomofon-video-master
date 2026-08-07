@@ -21,6 +21,9 @@ def main() -> None:
 
     original_replace_once = module.replace_once
 
+    def managed_name(text: str) -> str:
+        return text.replace('camera.', 'managedCamera.').replace('      camera,\n', '      managedCamera,\n')
+
     def replace_compatible(text: str, old: str, new: str, label: str) -> str:
         if label == 'managed canonical Hikvision resolver query':
             # Manual and generated managed-token resolvers intentionally contain
@@ -32,6 +35,24 @@ def main() -> None:
                     return text
                 raise RuntimeError(f'{label}: expected one or more managed resolver fragments, found 0')
             return text.replace(old, new)
+
+        if label == 'managed canonical Hikvision resolve branch':
+            # fix-manual-token-resolver-variable.py intentionally renames the
+            # managed-token row from camera -> managedCamera before this patch
+            # runs. Support both source shapes while keeping the collision guard.
+            if text.count(old) == 1:
+                return text.replace(old, new, 1)
+            guarded_old = managed_name(old)
+            guarded_new = managed_name(new)
+            if guarded_new in text:
+                return text
+            if text.count(guarded_old) == 1:
+                return text.replace(guarded_old, guarded_new, 1)
+            raise RuntimeError(
+                f'{label}: neither camera nor managedCamera resolver block matched '
+                f'(camera={text.count(old)}, managedCamera={text.count(guarded_old)})'
+            )
+
         return original_replace_once(text, old, new, label)
 
     module.replace_once = replace_compatible
