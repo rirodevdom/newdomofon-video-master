@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "prebuild": "bash ../scripts/prepare-frontend-source.sh && python3 ../scripts/patch-player-hls-browser-compat.py --project-dir .. && python3 ../scripts/patch-hikvision-archive-viewer-lease.py --project-dir .. --frontend-only && python3 ../scripts/patch-hikvision-smartyard-links.py --project-dir .. --frontend-only",
+    "prebuild": "bash ../scripts/prepare-frontend-source.sh && python3 ../scripts/patch-player-hls-browser-compat.py --project-dir .. && python3 ../scripts/patch-hikvision-archive-viewer-lease.py --project-dir .. --frontend-only && python3 ../scripts/patch-hikvision-smartyard-links.py --project-dir .. --frontend-only && python3 ../scripts/patch-hikvision-unified-cameras.py --project-dir .. --frontend-only",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview --host 0.0.0.0"
   },
