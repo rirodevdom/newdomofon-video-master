@@ -5,6 +5,7 @@ import argparse
 from pathlib import Path
 
 MARKER = "v312-hikvision-unified-camera-ui"
+LEASE_MARKER = "v312-hikvision-unified-camera-viewer-lease"
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
@@ -59,7 +60,7 @@ function cameraProtocolColor(camera: any) {
 
 def patch_player(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
-    if "function mediaApiPath" in text:
+    if "function mediaApiPath" in text and LEASE_MARKER in text:
         return
 
     computed_anchor = r'''const cameraId = computed(() => String(route.params.id || ''));
@@ -82,7 +83,17 @@ function mediaApiPath(suffix: string): string {
   }
   return `/player/${encodeURIComponent(cameraId.value)}/${clean}`;
 }'''
-    text = replace_once(text, computed_anchor, computed_new, "unified camera player transport helper")
+    if "function mediaApiPath" not in text:
+        text = replace_once(text, computed_anchor, computed_new, "unified camera player transport helper")
+
+    lease_anchor = "let archiveSeekAbortController: AbortController | null = null;\n"
+    lease_block = lease_anchor + r'''// v312-hikvision-unified-camera-viewer-lease
+const archiveViewerId = globalThis.crypto?.randomUUID?.()
+  || `hik-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+let archiveViewerChannelId = '';
+'''
+    if LEASE_MARKER not in text:
+        text = replace_once(text, lease_anchor, lease_block, "ordinary PlayerView stable Hikvision viewer id")
 
     text = replace_once(
         text,
@@ -111,7 +122,7 @@ function mediaApiPath(suffix: string): string {
     text = replace_once(
         text,
         "                const archive = await api.get(`/player/${encodeURIComponent(id)}/archive`, {\n                  params: {\n                    start: new Date(effectiveStartMs).toISOString(),\n                    end: new Date(effectiveEndMs).toISOString(),\n                    source: 'node'\n                  },",
-        "                const archive = await api.get(mediaApiPath('archive'), {\n                  params: isHikvision.value ? {\n                    start: new Date(effectiveStartMs).toISOString(),\n                    end: new Date(effectiveEndMs).toISOString()\n                  } : {\n                    start: new Date(effectiveStartMs).toISOString(),\n                    end: new Date(effectiveEndMs).toISOString(),\n                    source: 'node'\n                  },",
+        "                const archive = await api.get(mediaApiPath('archive'), {\n                  params: isHikvision.value ? {\n                    start: new Date(effectiveStartMs).toISOString(),\n                    end: new Date(effectiveEndMs).toISOString(),\n                    viewer_id: archiveViewerId\n                  } : {\n                    start: new Date(effectiveStartMs).toISOString(),\n                    end: new Date(effectiveEndMs).toISOString(),\n                    source: 'node'\n                  },",
         "unified camera archive playback endpoint",
     )
     text = replace_once(
@@ -127,7 +138,48 @@ function mediaApiPath(suffix: string): string {
         "unified camera export endpoint",
     )
 
-    for required in (MARKER, "mediaApiPath('live')", "mediaApiPath('archive')", "mediaApiPath('events')"):
+    old_destroy = r'''function destroyPlayer() {
+  archiveSeekGeneration += 1;
+  archiveSeekAbortController?.abort();
+  archiveSeekAbortController = null;
+  archivePreparing.value = false;
+  player?.destroy();
+  player = null;
+  if (playerRoot.value) playerRoot.value.innerHTML = '';
+}'''
+    new_destroy = r'''function destroyPlayer() {
+  const releaseChannelId = archiveViewerChannelId;
+  archiveViewerChannelId = '';
+  if (releaseChannelId) {
+    void api.post(`/hikvision-player/${encodeURIComponent(releaseChannelId)}/archive/release`, {
+      viewer_id: archiveViewerId
+    }).catch(() => undefined);
+  }
+  archiveSeekGeneration += 1;
+  archiveSeekAbortController?.abort();
+  archiveSeekAbortController = null;
+  archivePreparing.value = false;
+  player?.destroy();
+  player = null;
+  if (playerRoot.value) playerRoot.value.innerHTML = '';
+}'''
+    if "releaseChannelId = archiveViewerChannelId" not in text:
+        text = replace_once(text, old_destroy, new_destroy, "release Hikvision viewer from ordinary PlayerView")
+
+    ownership_anchor = "  destroyPlayer();\n\n  const nextPlayer = sdk.create({"
+    ownership_new = "  destroyPlayer();\n  archiveViewerChannelId = isHikvision.value ? hikvisionChannelId.value : '';\n\n  const nextPlayer = sdk.create({"
+    if "archiveViewerChannelId = isHikvision.value" not in text:
+        text = replace_once(text, ownership_anchor, ownership_new, "ordinary PlayerView Hikvision lease ownership")
+
+    for required in (
+        MARKER,
+        LEASE_MARKER,
+        "mediaApiPath('live')",
+        "mediaApiPath('archive')",
+        "mediaApiPath('events')",
+        "viewer_id: archiveViewerId",
+        "archive/release",
+    ):
         if required not in text:
             raise RuntimeError(f"unified camera player marker missing: {required}")
     path.write_text(text, encoding="utf-8")
@@ -146,6 +198,7 @@ def main() -> None:
 
     print("Hikvision cameras now use the ordinary Cameras list and ordinary camera PlayerView")
     print("The separate Hikvision channels navigation entry is removed")
+    print("Ordinary PlayerView now owns and releases Hikvision archive viewer leases")
 
 
 if __name__ == "__main__":
