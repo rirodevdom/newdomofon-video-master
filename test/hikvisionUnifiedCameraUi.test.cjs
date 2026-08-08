@@ -35,3 +35,16 @@ test('ordinary PlayerView selects Hikvision transport internally', () => {
   assert.match(player, /mediaApiPath\('events'\)/);
   assert.match(player, /mediaApiPath\('export'\)/);
 });
+
+test('ordinary PlayerView owns and releases Hikvision archive viewer lease', () => {
+  const player = read('frontend/src/views/PlayerView.vue');
+  assert.match(player, /v312-hikvision-unified-camera-viewer-lease/);
+  assert.match(player, /const archiveViewerId/);
+  assert.match(player, /viewer_id: archiveViewerId/);
+  assert.match(player, /archive\/release/);
+  assert.match(player, /archiveViewerChannelId = isHikvision\.value/);
+
+  const pkg = JSON.parse(read('frontend/package.json'));
+  assert.doesNotMatch(pkg.scripts.prebuild, /patch-hikvision-archive-viewer-lease\.py.*frontend-only/);
+  assert.match(pkg.scripts.prebuild, /patch-hikvision-unified-camera-ui\.py/);
+});
